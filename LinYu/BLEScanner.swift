@@ -181,7 +181,7 @@ final class BLEScanner: NSObject, ObservableObject {
             stateText = "已暂停扫描（正在连接）"
         }
         gattLog.removeAll()
-        gattSummary = "正在连接 \(p.name ?? id.uuidString.prefix(8))…"
+        gattSummary = "正在连接 \(p.name ?? String(id.uuidString.prefix(8)))…"
         connectedId = id
         p.delegate = self
         central.connect(p, options: nil)
