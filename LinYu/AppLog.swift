@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 /// 一条日志
 struct LogLine: Identifiable, Hashable {

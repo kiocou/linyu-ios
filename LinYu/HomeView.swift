@@ -78,9 +78,7 @@ struct HomeView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if let name = Optional(session.displayName), !name.isEmpty {
-                        Text(name)
-                    }
+                    Text(session.displayName.isEmpty ? "已登录" : session.displayName)
                     Text("projectId \(session.projectId)")
                     Divider()
                     Button("退出登录", role: .destructive) {

@@ -90,28 +90,6 @@ final class BleSession: NSObject, ObservableObject {
 
     // MARK: - 连接
 
-    /// 连接并等到「服务发现 + 通知开启」全部完成
-    @discardableResult
-    func connect(mac: String, timeout: TimeInterval = 15) async -> Bool {
-        guard let central else { return false }
-        guard central.state == .poweredOn else {
-            setPhase(.failed("蓝牙未开启（\(describe(central.state))）"))
-            return false
-        }
-
-        let normalized = Self.normalizeMac(mac)
-        guard let n = normalized, let uuid = UUID(uuidString: n) ?? nil else {
-            // 这个分支实际不会走到：iOS 只能靠扫描拿到的 peripheral 连接，
-            // 不能像 Android 那样用 MAC 直接 getRemoteDevice
-            _ = n
-            setPhase(.failed("iOS 不能直接用 MAC 连接，只能连接扫描到的设备"))
-            return false
-        }
-        _ = uuid
-        setPhase(.failed("请使用扫描到的设备连接（iOS 限制）"))
-        return false
-    }
-
     /// 用扫描到的 `CBPeripheral` 连接（**iOS 唯一可行的方式**）
     @discardableResult
     func connect(peripheral p: CBPeripheral, timeout: TimeInterval = 15) async -> Bool {
@@ -257,7 +235,7 @@ final class BleSession: NSObject, ObservableObject {
     private func sendAndAwait(cmd: UInt8, data: [UInt8], timeout: TimeInterval) async -> [UInt8]? {
         let wire = BleFrame.cmdToWire(cmd: cmd, data: data)
         AppLog.shared.i("→ BLE 发 0x\(String(cmd, radix: 16))（\(wire.count)B）",
-                        BleFrame.toHex(String(decoding: wire, as: UTF8.self)))
+                        BleFrame.toHex(wire))
 
         guard await writeChunks(wire) else {
             AppLog.shared.w("0x\(String(cmd, radix: 16)) 写入失败")

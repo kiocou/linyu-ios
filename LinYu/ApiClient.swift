@@ -118,7 +118,7 @@ struct ApiClient {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let text = String(data: data, encoding: .utf8) ?? ""
             AppLog.shared.i(
-                "HTTP \(code) GET \(path) (\(ms)ms)\(tag.map { " [\(tag)]" } ?? "")",
+                "HTTP \(code) GET \(path) (\(ms)ms)\(tag.map { " [\($0)]" } ?? "")",
                 "resp: \(text.prefix(400))"
             )
             return data
@@ -159,7 +159,7 @@ struct ApiClient {
             let resp = try JSONDecoder().decode(APIResponse<T>.self, from: data)
             if !resp.success {
                 throw ApiError.business(
-                    code: resp.errorCode,
+                    code: resp.errorCode ?? -1,
                     message: resp.errorMessage ?? resp.msg ?? "请求失败"
                 )
             }
