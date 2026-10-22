@@ -65,33 +65,30 @@ struct HomeView: View {
                 } label: {
                     Label("重新扫描", systemImage: "arrow.clockwise")
                 }
-            }
-        }
-        .navigationTitle("淋浴")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+
                 Button {
                     showLog = true
                 } label: {
-                    Image(systemName: "doc.text.magnifyingglass")
+                    Label("运行日志", systemImage: "doc.text.magnifyingglass")
                 }
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Text(session.displayName.isEmpty ? "已登录" : session.displayName)
-                    Text("projectId \(session.projectId)")
-                    Divider()
-                    Button("退出登录", role: .destructive) {
-                        flow.reset()
-                        session.logout()
-                    }
+
+                Button(role: .destructive) {
+                    flow.reset()
+                    session.logout()
                 } label: {
-                    Image(systemName: "person.crop.circle")
+                    Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !session.displayName.isEmpty {
+                        Text(session.displayName)
+                    }
+                    Text("projectId \(session.projectId) · \(session.telephone)")
+                        .font(.caption2)
                 }
             }
         }
+        .navigationTitle("淋浴")
         .sheet(isPresented: $showLog) {
             NavigationStack { LogView() }
         }
