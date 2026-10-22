@@ -24,10 +24,11 @@ targets:
       - path: LinYu
         excludes:
           - Info.plist
-      # 图片资源（app_logo.png 从 Android 的 res/drawable-nodpi 搬过来，
-      # 登录页 80pt、Toast 32pt 用的就是它）
-      - path: LinYu/Resources
-        type: folder
+      # ⚠️ 图片资源**直接放在 LinYu 下**，不要再单独声明一个
+      # `LinYu/Resources` 的 source —— 它和外层 `LinYu` 的扫描范围重叠，
+      # XcodeGen 生成出来的工程会丢掉 PRODUCT_BUNDLE_IDENTIFIER，
+      # archive 时直接报 "Missing Bundle Identifier"。
+      # XcodeGen 会自动把 source 路径里的图片当资源加进 bundle。
     info:
       path: LinYu/Info.plist
       properties:
