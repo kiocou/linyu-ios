@@ -467,7 +467,7 @@ extension BLEScanner: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         if let s = activeSession {
-            s.handleDidConnect(peripheral)
+            Task { @MainActor in s.handleDidConnect(peripheral) }
             return
         }
         gattSummary = "已连接，正在发现服务…"
@@ -480,7 +480,7 @@ extension BLEScanner: CBCentralManagerDelegate {
         error: Error?
     ) {
         if let s = activeSession {
-            s.handleDidFailToConnect(error)
+            Task { @MainActor in s.handleDidFailToConnect(error) }
             return
         }
         gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
@@ -493,7 +493,7 @@ extension BLEScanner: CBCentralManagerDelegate {
         error: Error?
     ) {
         if let s = activeSession {
-            s.handleDidDisconnect(error)
+            Task { @MainActor in s.handleDidDisconnect(error) }
             return
         }
         if connectedId != nil {
