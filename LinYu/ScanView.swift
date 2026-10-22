@@ -6,14 +6,17 @@ import UIKit
 /// 把附近 BLE 设备的**原始广播信息**列出来，用于判断 iOS 能否在
 /// 12 台同型号设备中区分出目标那一台。
 ///
+/// ## 2026-10-22 实测结论
+///
+/// 该型号水表的 `manufacturerData` 形如 `00 00 C4 7F 0E DD 2E 9C`：
+/// 前 2 字节是 Company ID，后 6 字节就是 MAC，去掉冒号即 `snCode`。
+/// 所以页面会直接把解析出的 snCode 显示出来——不用再靠名字猜。
+///
 /// ## 关于筛选
 ///
 /// 直接列全部会把附近所有蓝牙设备都倒出来（耳机、手环、共享单车…），
-/// 所以默认只显示「看起来像水控设备」的：名称带关键词，或广播里带
-/// manufacturerData / serviceData。
-///
-/// 但**默认筛选不能是唯一选项**——目标设备万一也没名字、也没带这些数据，
-/// 被过滤掉就永远找不到。所以顶部永远保留「全部」开关和搜索框。
+/// 所以默认只显示「看起来像水控设备」的。但**默认筛选不能是唯一选项**，
+/// 顶部永远保留「全部」开关和搜索框。
 struct ScanView: View {
     @StateObject private var scanner = BLEScanner()
     /// 展开查看详细广播数据的设备
@@ -23,6 +26,10 @@ struct ScanView: View {
     @State private var showAll = false
     /// 名称搜索
     @State private var searchText = ""
+
+    /// 日志文件（生成后弹分享面板）
+    @State private var logFileURL: URL?
+    @State private var showShareSheet = false
 
     /// 按当前筛选条件算出的可见列表
     private var visibleDevices: [DiscoveredPeripheral] {
@@ -35,8 +42,8 @@ struct ScanView: View {
             list = list.filter {
                 $0.name.localizedCaseInsensitiveContains(kw)
                     || $0.id.uuidString.localizedCaseInsensitiveContains(kw)
-                    || ($0.manufacturerData ?? "").localizedCaseInsensitiveContains(kw)
-                    || ($0.serviceData ?? "").localizedCaseInsensitiveContains(kw)
+                    || ($0.manufacturerHex ?? "").localizedCaseInsensitiveContains(kw)
+                    || ($0.parsedSnCode ?? "").localizedCaseInsensitiveContains(kw)
             }
         }
         return list
@@ -44,6 +51,10 @@ struct ScanView: View {
 
     private var likelyCount: Int {
         scanner.devices.filter(\.looksLikeWaterMeter).count
+    }
+
+    private var snCodeCount: Int {
+        scanner.devices.filter { $0.parsedSnCode != nil }.count
     }
 
     var body: some View {
@@ -72,7 +83,7 @@ struct ScanView: View {
                         Button {
                             copyAll()
                         } label: {
-                            Label("复制全部", systemImage: "doc.on.doc")
+                            Label("复制", systemImage: "doc.on.doc")
                                 .labelStyle(.titleOnly)
                                 .font(.caption)
                         }
@@ -81,13 +92,22 @@ struct ScanView: View {
             }
 
             Section {
+                exportRow
+            }
+
+            Section {
                 analysisHint
             }
         }
         .navigationTitle("BLE 扫描")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "按名称 / id / hex 搜索")
+        .searchable(text: $searchText, prompt: "按名称 / id / snCode 搜索")
         .onDisappear { scanner.stop() }
+        .sheet(isPresented: $showShareSheet) {
+            if let url = logFileURL {
+                ShareSheet(items: [url])
+            }
+        }
     }
 
     // MARK: - 子视图
@@ -132,6 +152,10 @@ struct ScanView: View {
                 Text("没有匹配到水表特征。可以切到「全部」看看——目标设备可能没有名字，也没带广播数据。")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if snCodeCount > 0 {
+                Text("已从 \(snCodeCount) 台设备的 broadcast 里解析出 snCode")
+                    .font(.caption)
+                    .foregroundStyle(.green)
             }
         }
         .padding(.vertical, 2)
@@ -153,16 +177,36 @@ struct ScanView: View {
         .padding(.vertical, 4)
     }
 
+    private var exportRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                saveLog()
+            } label: {
+                Label("保存日志（\(visibleDevices.count) 台）", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(visibleDevices.isEmpty)
+
+            Text("生成一个 txt 文件，可以存到「文件」、AirDrop 或发到电脑。里面包含每台设备的 snCode、广播原始 hex、RSSI 等。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            if let copiedHint {
+                Text("已复制：\(copiedHint)")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     private func deviceRow(_ device: DiscoveredPeripheral) -> some View {
         let isOpen = expanded.contains(device.id)
         return VStack(alignment: .leading, spacing: 8) {
             // 主行：名称 + 信号强度
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if device.looksLikeWaterMeter {
-                    Image(systemName: "drop.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.blue)
-                }
+                confidenceIcon(device)
                 Text(device.isUnnamed ? "(未命名)" : device.name)
                     .font(.body.weight(.medium))
                     .foregroundStyle(device.isUnnamed ? .secondary : .primary)
@@ -173,7 +217,20 @@ struct ScanView: View {
                     .foregroundStyle(rssiColor(device.rssi))
             }
 
-            // identifier（就是 iOS 能拿到的"地址"）
+            // snCode：这是最关键的信息
+            if let sn = device.parsedSnCode {
+                HStack(spacing: 6) {
+                    Text("SN")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(sn)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(.blue)
+                        .textSelection(.enabled)
+                }
+            }
+
+            // identifier（iOS 系统分配的 UUID，不是 MAC）
             HStack(spacing: 6) {
                 Text("id")
                     .font(.caption2)
@@ -182,20 +239,10 @@ struct ScanView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                 if device.isConnectable {
-                    Text("可连接")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.green.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.green)
+                    tag("可连接", .green)
                 }
-                if device.manufacturerData != nil || device.serviceData != nil {
-                    Text("有广播数据")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.blue)
+                if device.hasKlcxkjService {
+                    tag("FEE7", .blue)
                 }
             }
 
@@ -206,13 +253,16 @@ struct ScanView: View {
                     if !device.serviceUUIDs.isEmpty {
                         keyValue("Service UUID", device.serviceUUIDs.joined(separator: "\n"))
                     }
-                    if let m = device.manufacturerData {
+                    if let m = device.manufacturerHex {
                         keyValue("manufacturerData", m)
                     }
-                    if let s = device.serviceData {
+                    if let mac = device.parsedMac {
+                        keyValue("解析出的 MAC", mac)
+                    }
+                    if let s = device.serviceDataHex {
                         keyValue("serviceData", s)
                     }
-                    if device.manufacturerData == nil && device.serviceData == nil {
+                    if device.manufacturerData == nil && device.serviceData.isEmpty {
                         Text("这台设备没有广播 manufacturerData / serviceData")
                             .font(.caption)
                             .foregroundStyle(.orange)
@@ -246,27 +296,43 @@ struct ScanView: View {
 
     private var analysisHint: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("看完这些数据后，请回答三个问题")
+            Text("保存日志后发我，重点看这些")
                 .font(.footnote.weight(.semibold))
             Text("""
-            1. 同型号的多台设备，manufacturerData 或 serviceData 是否互不相同？
-            2. 这些字段里能不能找到和设备 SN（如 001583E56112）对应的部分？
-            3. 设备名里有没有房间信息（如 105 房）？
+            • snCode 是否和 Android 端看到的一致（如 C47F0EDCBCC7）
+            • 同型号多台设备的 snCode 是否互不相同
+            • 有没有哪台命中 FEE7 但解析不出 snCode
             """)
             .font(.caption)
             .foregroundStyle(.secondary)
-
-            if let copiedHint {
-                Divider()
-                Text("已复制：\(copiedHint)")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            }
         }
         .padding(.vertical, 4)
     }
 
     // MARK: - 工具
+
+    private func confidenceIcon(_ device: DiscoveredPeripheral) -> some View {
+        Group {
+            switch device.confidence {
+            case .certain:
+                Image(systemName: "drop.fill").foregroundStyle(.blue)
+            case .likely:
+                Image(systemName: "drop").foregroundStyle(.blue.opacity(0.6))
+            case .unknown:
+                Image(systemName: "questionmark.circle").foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption2)
+    }
+
+    private func tag(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.15), in: Capsule())
+            .foregroundStyle(color)
+    }
 
     private func keyValue(_ key: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -295,8 +361,11 @@ struct ScanView: View {
             "connectable: \(d.isConnectable)",
             "serviceUUIDs: \(d.serviceUUIDs.joined(separator: ", "))"
         ]
-        if let m = d.manufacturerData { lines.append("manufacturerData: \(m)") }
-        if let s = d.serviceData { lines.append("serviceData: \(s.replacingOccurrences(of: "\n", with: " | "))") }
+        if let m = d.manufacturerHex { lines.append("manufacturerData: \(m)") }
+        if let sn = d.parsedSnCode { lines.append("parsedSnCode: \(sn)") }
+        if let s = d.serviceDataHex {
+            lines.append("serviceData: \(s.replacingOccurrences(of: "\n", with: " | "))")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -305,6 +374,26 @@ struct ScanView: View {
         UIPasteboard.general.string = text
         copiedHint = "当前列表 \(visibleDevices.count) 台"
     }
+
+    private func saveLog() {
+        guard let url = ScanLogStore.write(devices: visibleDevices) else {
+            copiedHint = "日志写入失败"
+            return
+        }
+        logFileURL = url
+        showShareSheet = true
+    }
+}
+
+/// 系统分享面板（UIActivityViewController）
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 #Preview {

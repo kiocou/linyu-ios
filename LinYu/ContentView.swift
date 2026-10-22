@@ -53,11 +53,10 @@ enum BuildInfo {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
-        let device = UIDevice.current
         return """
         版本 \(version) (\(build))
-        \(device.systemName) \(device.systemVersion)
-        \(device.model)
+        \(UIDevice.systemName) \(UIDevice.systemVersion)
+        \(UIDevice.friendlyModel)
         """
     }
 }
