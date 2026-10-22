@@ -451,7 +451,7 @@ struct BackgroundCardView: View {
                     Text("更换")
                         .font(.system(size: 14))
                         .foregroundStyle(.white)
-                        .padding(.horizontal: 16)
+                        .padding(.horizontal, 16)
                         .frame(height: 40)
                         .background(colors.accent)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))

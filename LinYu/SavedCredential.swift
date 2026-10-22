@@ -29,10 +29,10 @@ enum SavedCredential {
     }
 
     /// 进入登录页时回填的手机号
-    static var phone: String? { get(accountPhone) }
+    static var phone: String? { read(accountPhone) }
 
     /// 进入登录页时回填的密码（有值就说明上次是密码登录且用户没清过）
-    static var password: String? { get(accountPassword) }
+    static var password: String? { read(accountPassword) }
 
     /// 退出登录 / 用户主动清除时调用
     static func clear() {
@@ -57,7 +57,9 @@ enum SavedCredential {
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    private static func get(_ key: String) -> String? {
+    /// ⚠️ 不能叫 `get`——`get` 是 Swift 计算属性的访问器关键字，
+    /// `{ get(...) }` 会被解析成 getter 声明而报错
+    private static func read(_ key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
