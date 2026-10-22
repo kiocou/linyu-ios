@@ -150,8 +150,8 @@ final class ShowerFlow: ObservableObject {
                 "macType": macType,
                 "bigTypeId": String(device.bigTypeId ?? 4),
                 "smallTypeId": String(device.smallTypeId ?? 1),
-                "protocolType": protocolType,
-                "randomNumber": randomNumber,
+                "protocolType": st.protocolType,
+                "randomNumber": st.randomNumber,
                 "xfModel": xfModel,
                 "signature": signature
             ], tag: "rateOrder")
