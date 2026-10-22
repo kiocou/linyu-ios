@@ -40,7 +40,7 @@ enum CloudShower {
                     return .inUseByOthers
                 }
                 let orderNo = using.data?.orderNo ?? ""
-                let pre = using.data?.preDeductMoney.flatMap(Double.init)
+                let pre = using.data?.preDeductMoney?.value
                 AppLog.shared.i("设备 \(snCode) 已有进行中订单 \(orderNo)，恢复")
                 return .resumed(orderNo: orderNo, preDeduct: pre)
             }

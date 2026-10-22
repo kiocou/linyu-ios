@@ -42,10 +42,10 @@ struct MainTabView: View {
                 Group {
                     switch tab {
                     case 0:
-                        MainScreenView(scanner: scanner, flow: flow, store: store)
+                        MainScreenView(scanner: scanner, store: store, flow: flow)
                             .id(refreshToken)
                     case 1:
-                        WalletScreenView(flow: flow, store: store)
+                        WalletScreenView(store: store, flow: flow)
                     default:
                         UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
                     }

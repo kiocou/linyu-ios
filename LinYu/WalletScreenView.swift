@@ -7,10 +7,10 @@ struct WalletScreenView: View {
     @EnvironmentObject private var session: Session
     @Environment(\.appColors) private var colors
 
-    @ObservedObject var flow: ShowerFlow
     /// 账单/余额由容器层持有（对照 Android 的 MainViewModel），
     /// 页面切走再切回来不会重新请求
     @ObservedObject var store: AppDataStore
+    @ObservedObject var flow: ShowerFlow
 
     @State private var detailBill: BillDTO?
     @State private var showEditDialog = false

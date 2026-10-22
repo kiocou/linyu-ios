@@ -93,8 +93,10 @@ enum BillService {
             AppLog.shared.i("一卡通余额：\(c.amount ?? "空")")
         }
         if let w = await loadWallet() {
-            Prefs.walletBalance = w.accountRealMoney ?? ""
-            AppLog.shared.i("钱包余额：\(w.accountRealMoney ?? "空")")
+            // accountRealMoney 是数字、money 是字符串，统一走 AnyNumber 后取 Double
+            let v = w.realYuan ?? w.moneyYuan
+            Prefs.walletBalance = v.map { String($0) } ?? ""
+            AppLog.shared.i("钱包余额：\(v.map { String($0) } ?? "空")")
         }
     }
 }
