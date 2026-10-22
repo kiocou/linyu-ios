@@ -67,6 +67,9 @@ final class ShowerFlow: ObservableObject {
     let ble = BleSession()
 
     private var timer: Timer?
+    /// 关阀后要断开重连，必须记住当时的 peripheral 和 central
+    private var currentPeripheral: CBPeripheral?
+    private var currentCentral: CBCentralManager?
 
     // MARK: - 开阀
 
@@ -77,6 +80,9 @@ final class ShowerFlow: ObservableObject {
             return
         }
         AppLog.shared.i("=== 开始开阀 \(device.displayName)（sn=\(device.snCode ?? "-")）===")
+
+        currentPeripheral = peripheral
+        currentCentral = central
 
         // 1. 连接
         stage = .connecting
@@ -203,6 +209,16 @@ final class ShowerFlow: ObservableObject {
 
     // MARK: - 关阀 + 结算
 
+    /// 关阀并结算。
+    ///
+    /// ## ⚠️ 关阀后必须**断开重连**再采集
+    ///
+    /// Android 端 2026-09-30 用同一笔订单实测对比：
+    /// - 同一连接里「关阀后立刻采集」→ 服务端判 **226「加密校验失败」**，账单停在 0.0
+    /// - **断开重连后**再采集 → 服务端接受，结算成功
+    ///
+    /// 原因是重连后设备才会给出新的 `randomNumber`，而上传签名用的正是它；
+    /// 同一连接里拿到的是开阀时的旧值，服务端重算签名对不上。
     func close() async {
         guard let order = activeOrder else {
             stage = .failed("没有进行中的订单")
@@ -211,21 +227,46 @@ final class ShowerFlow: ObservableObject {
         stopTimer()
         AppLog.shared.i("=== 开始关阀 \(order.snCode)，已用 \(order.elapsedSeconds)s ===")
 
-        // 1. 关阀
+        // ① 关阀
         stage = .closing
         let closed = await ble.closeValve()
         if !closed {
-            AppLog.shared.w("0x22 关阀未确认，仍继续采集（设备可能已经关了）")
+            // 设备可能已经关了（实测第二次 0x22 返回 81 01 = 已关闭），继续走结算
+            AppLog.shared.w("0x22 关阀未确认，继续尝试结算")
         }
 
-        // 2. 采集
+        // ② 断开 → 重连（226 的关键）
+        guard let p = currentPeripheral, let central = currentCentral else {
+            stage = .failed("缺少设备连接信息，无法完成结算")
+            return
+        }
+        ble.disconnect()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+
         stage = .collecting
-        guard let payload = await ble.collect() else {
-            stage = .failed("采集消费数据失败，设备可能停在未结算状态（state=3）")
+        var reconnected = await ble.connect(peripheral: p, using: central)
+        if !reconnected {
+            // BLE 栈偶尔还没处理完上一次断开，稍等再试一次
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            reconnected = await ble.connect(peripheral: p, using: central)
+        }
+        guard reconnected else {
+            stage = .failed("设备已关闭，但重连失败，结算未完成（下次连接会自动结清）")
             return
         }
 
-        // ⚠️ 只有长度 ≥42 且首字节 0x80 才是有效消费体
+        // ③ 重新查状态 —— 必须用这里的 randomNumber / protocolType
+        guard let st = await ble.query() else {
+            stage = .failed("设备已关闭，但读取状态失败，下次连接会自动结清")
+            return
+        }
+        AppLog.shared.i("关阀重连后状态：\(st.describe)")
+
+        // ④ 采集
+        guard let payload = await ble.collect() else {
+            stage = .failed("采集消费数据失败，设备可能停在未结算状态（state=\(st.state)）")
+            return
+        }
         guard payload.count >= 42, payload.first == 0x80 else {
             let firstHex = payload.first.map { String(format: "0x%02X", $0) } ?? "空"
             AppLog.shared.w("消费数据无效（\(payload.count)B，首字节 \(firstHex)）")
@@ -233,7 +274,7 @@ final class ShowerFlow: ObservableObject {
             return
         }
 
-        // 3. 上传（xfData 必须小写）
+        // ⑤ 上传（xfData 必须小写；protocolType / randomNumber 用重连后的）
         stage = .uploading
         let xfData = BleFrame.toHex(payload).lowercased()
         guard let sig = BleSign.signUpload(
@@ -248,8 +289,8 @@ final class ShowerFlow: ObservableObject {
         let uploadData: Data
         do {
             uploadData = try await ApiClient.post("/order/upload/bluetooth/data", form: [
-                "protocolType": order.protocolType,
-                "randomNumber": order.randomNumber,
+                "protocolType": st.protocolType,
+                "randomNumber": st.randomNumber,
                 "xfData": xfData,
                 "signature": sig
             ], tag: "upload")
@@ -272,12 +313,13 @@ final class ShowerFlow: ObservableObject {
         lastConsumeYuan = upMoney
         AppLog.shared.i("✅ 结算上传成功，金额 \(upMoney) 元")
 
-        // 4. 写回设备（清掉离线记录），失败不阻塞——服务端已经记账
+        // ⑥ 写回设备（清掉离线记录）；失败不阻塞——服务端已经记账
         stage = .writingBack
         if let clData = uploadResp.data?.clData, !clData.isEmpty,
            let plain = KlcxkjCrypto.decryptByAes(clData) {
-            // 明文格式 `<前缀>-<dataHex>`，取 `-` 之后那段
-            let hexPart = plain.contains("-") ? String(plain.split(separator: "-", maxSplits: 1).last ?? "") : plain
+            let hexPart = plain.contains("-")
+                ? String(plain.split(separator: "-", maxSplits: 1).last ?? "")
+                : plain
             if let bytes = BleFrame.fromHex(hexPart), !bytes.isEmpty {
                 let ok = await ble.writeBack(bytes)
                 AppLog.shared.i(ok ? "0x86 写回成功，设备记录已清" : "0x86 写回失败（服务端已记账）")
@@ -290,6 +332,8 @@ final class ShowerFlow: ObservableObject {
 
         ble.disconnect()
         activeOrder = nil
+        currentPeripheral = nil
+        currentCentral = nil
         stage = .done
     }
 

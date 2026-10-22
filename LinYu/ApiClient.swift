@@ -70,6 +70,13 @@ struct ApiClient {
             .map { "\($0.key)=\($0.value)" }
             .sorted()
             .joined(separator: "&")
+        // 签名不进正文，但要记录长度和首 8 位，便于判断是否真的算出来了
+        let sigInfo = fields["signature"].map { "signature(len=\($0.count), head=\($0.prefix(8)))" } ?? "signature=MISSING"
+        let headerDump = (req.allHTTPHeaderFields ?? [:])
+            .map { "\($0.key)=\($0.value)" }
+            .filter { !$0.lowercased().hasPrefix("content-length") }
+            .sorted()
+            .joined(separator: " ")
 
         let started = Date()
         do {
@@ -79,7 +86,7 @@ struct ApiClient {
             let text = String(data: data, encoding: .utf8) ?? ""
             AppLog.shared.i(
                 "HTTP \(code) POST \(path) (\(ms)ms)\(tag.map { " [\($0)]" } ?? "")",
-                "req: \(bodyPreview)\nresp: \(text.prefix(600))"
+                "headers: \(headerDump)\n\(sigInfo)\nreq: \(bodyPreview)\nresp: \(text.prefix(600))"
             )
             return data
         } catch {
