@@ -457,7 +457,7 @@ struct DeviceDetailSheet: View {
 
             VStack(spacing: 10) {
                 detailRow("设备类型", device.typeName)
-                detailRow("房间", device.locationFriendly)
+                detailRow("房间", device.displayName)
                 detailRow("设备编号", device.snCode ?? "—")
                 detailRow("MAC", device.connectMac)
                 detailRow("预扣金额", "¥ 5.00")
