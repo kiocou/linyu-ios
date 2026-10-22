@@ -30,6 +30,8 @@ struct ScanView: View {
     /// 日志文件（生成后弹分享面板）
     @State private var logFileURL: URL?
     @State private var showShareSheet = false
+    /// 连接测试结果面板
+    @State private var showGatt = false
 
     /// 按当前筛选条件算出的可见列表
     private var visibleDevices: [DiscoveredPeripheral] {
@@ -106,6 +108,11 @@ struct ScanView: View {
         .sheet(isPresented: $showShareSheet) {
             if let url = logFileURL {
                 ShareSheet(items: [url])
+            }
+        }
+        .sheet(isPresented: $showGatt) {
+            NavigationStack {
+                GattResultView(scanner: scanner)
             }
         }
     }
@@ -271,14 +278,12 @@ struct ScanView: View {
                 .padding(.top, 4)
             }
 
-            HStack {
+            HStack(spacing: 14) {
                 Button(isOpen ? "收起" : "查看广播数据") {
                     if isOpen { expanded.remove(device.id) } else { expanded.insert(device.id) }
                 }
                 .font(.caption)
                 .buttonStyle(.borderless)
-
-                Spacer()
 
                 Button {
                     UIPasteboard.general.string = describe(device)
@@ -289,6 +294,22 @@ struct ScanView: View {
                         .labelStyle(.titleOnly)
                 }
                 .buttonStyle(.borderless)
+
+                Spacer()
+
+                // 只对疑似水表提供连接测试——连一台耳机没有意义
+                if device.confidence != .unknown {
+                    Button {
+                        scanner.connect(device.id)
+                        showGatt = true
+                    } label: {
+                        Label("连接测试", systemImage: "link")
+                            .font(.caption)
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.blue)
+                }
             }
         }
         .padding(.vertical, 4)

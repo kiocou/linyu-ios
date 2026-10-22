@@ -55,10 +55,21 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
 
     /// 从 manufacturerData 里解析出的 snCode。
     ///
-    /// 规则：跳过前 2 字节 Company ID，取后面 6 字节 MAC，转成 12 位大写 hex。
-    /// 不足 8 字节时返回 nil（不做猜测）。
+    /// ## 严格格式校验（2026-10-22 实测后收紧）
+    ///
+    /// 只有**正好 8 字节**且**前两字节为 `00 00`**（Company ID == 0）的才算：
+    ///
+    /// ```
+    /// 00 00 | C4 7F 0E DD 2E 9C
+    /// ```
+    ///
+    /// ⚠️ 之前只判 `count >= 8` 就取最后 6 字节，结果把一堆无关设备
+    /// （29 字节的、6 字节的）也「凑」出了假 snCode，实测 56 台里有 17 个假值。
+    /// 宁可解析不出来，也不能给出错的 SN——错 SN 会直接导致查错台账。
     var parsedSnCode: String? {
-        guard let data = manufacturerData, data.count >= 8 else { return nil }
+        guard let data = manufacturerData else { return nil }
+        guard data.count == 8 else { return nil }
+        guard data[data.startIndex] == 0x00, data[data.startIndex + 1] == 0x00 else { return nil }
         return data.suffix(6).map { String(format: "%02X", $0) }.joined()
     }
 
@@ -85,20 +96,21 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
 
     /// 看起来像不像水控设备——用于默认过滤掉耳机、手环之类。
     ///
-    /// 优先级从高到低：
-    /// 1. 广播 Service UUID 含 `FEE7`（**最可靠**，实测确认）
-    /// 2. 能从 manufacturerData 解析出 snCode
+    /// 判据（任一命中）：
+    /// 1. 广播 Service UUID 含 `FEE7`（**实测 6 台真水表全部命中，最可靠**）
+    /// 2. manufacturerData 是严格的 8 字节 `00 00 + MAC` 格式
     /// 3. 名称带关键词
-    /// 4. 带任意 manufacturerData / serviceData
     ///
-    /// ⚠️ 这个判定**只用于默认筛选**，界面上永远可以切到「全部」。
+    /// ⚠️ 不再用「有 manufacturerData 就算」——实测 56 台里 31 台都有广播数据，
+    /// 里面绝大多数是耳机、手环、共享设备，那样筛等于没筛。
+    ///
+    /// 这个判定**只用于默认筛选**，界面上永远可以切到「全部」。
     var looksLikeWaterMeter: Bool {
         if hasKlcxkjService { return true }
         if parsedSnCode != nil { return true }
         let n = name.lowercased()
         let keywords = ["klcxkj", "klcx", "water", "shower", "热水", "水表", "淋浴", "水控"]
-        if keywords.contains(where: { n.contains($0) }) { return true }
-        return manufacturerData != nil || !serviceData.isEmpty
+        return keywords.contains(where: { n.contains($0) })
     }
 
     /// 识别可信度，用于界面上区分"确定"和"可能"
@@ -136,8 +148,54 @@ final class BLEScanner: NSObject, ObservableObject {
 
     private var central: CBCentralManager?
     private var byId: [UUID: DiscoveredPeripheral] = [:]
+    /// 保留 `CBPeripheral` 引用——`identifier` 本身不能直接连接
+    private var peripherals: [UUID: CBPeripheral] = [:]
     /// 是否已经自动开过一次扫描——避免用户手动停止后，蓝牙状态变化又把它拉起来
     private var didAutoStart = false
+
+    // MARK: - 连接与服务检查（只读，不发任何命令）
+
+    /// 当前正在连接/已连接设备的 identifier
+    @Published private(set) var connectedId: UUID?
+    /// GATT 发现的逐行日志
+    @Published private(set) var gattLog: [String] = []
+    /// 一句话结论（有没有 FF00）
+    @Published private(set) var gattSummary: String = ""
+    /// 还有多少个服务的特征没发现完（归零时做判定）
+    private var servicesPending = 0
+
+    /// 该项目依赖的水控 GATT 服务与特征
+    static let serviceFF00 = "FF00"
+    static let notifyFF01 = "FF01"
+    static let writeFF02 = "FF02"
+
+    /// 连接设备并发现服务。**只读，不写任何特征。**
+    func connect(_ id: UUID) {
+        guard let central, let p = peripherals[id] else {
+            gattSummary = "找不到该设备的引用（请重新扫描）"
+            return
+        }
+        if isScanning {
+            central.stopScan()
+            isScanning = false
+            stateText = "已暂停扫描（正在连接）"
+        }
+        gattLog.removeAll()
+        gattSummary = "正在连接 \(p.name ?? id.uuidString.prefix(8))…"
+        connectedId = id
+        p.delegate = self
+        central.connect(p, options: nil)
+    }
+
+    func disconnect() {
+        guard let central, let id = connectedId, let p = peripherals[id] else { return }
+        central.cancelPeripheralConnection(p)
+        connectedId = nil
+        gattSummary = "已断开"
+    }
+
+    /// 某台设备是否正在连接/已连接
+    func isConnected(_ id: UUID) -> Bool { connectedId == id }
 
     override init() {
         super.init()
@@ -207,13 +265,39 @@ extension BLEScanner: CBCentralManagerDelegate {
         }
     }
 
+    // MARK: 连接回调（只发现服务，不发命令）
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        gattSummary = "已连接，正在发现服务…"
+        peripheral.discoverServices(nil)
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
+        connectedId = nil
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        if connectedId != nil {
+            gattSummary = "已断开\(error.map { "（\($0.localizedDescription)）" } ?? "")"
+        }
+        connectedId = nil
+    }
+
     func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
-    ) {
-        callbackCount += 1
+    ) {        callbackCount += 1
 
         let adv = advertisementData
         let localName = adv[CBAdvertisementDataLocalNameKey] as? String
@@ -243,7 +327,107 @@ extension BLEScanner: CBCentralManagerDelegate {
         )
 
         byId[item.id] = item
+        // 保留引用，后面"连接测试"要用
+        peripherals[item.id] = peripheral
         devices = byId.values.sorted { $0.rssi > $1.rssi }
+    }
+}
+
+// MARK: - CBPeripheralDelegate（只发现，不读写）
+
+extension BLEScanner: CBPeripheralDelegate {
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            gattSummary = "发现服务失败：\(error.localizedDescription)"
+            return
+        }
+        let services = peripheral.services ?? []
+        gattLog.append("发现 \(services.count) 个服务")
+        guard !services.isEmpty else {
+            gattSummary = "❌ 连上了，但没有任何 GATT 服务"
+            return
+        }
+        servicesPending = services.count
+        for s in services {
+            gattLog.append("SERVICE \(s.uuid.uuidString)")
+            peripheral.discoverCharacteristics(nil, for: s)
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didDiscoverCharacteristicsFor service: CBService,
+        error: Error?
+    ) {
+        if let error {
+            gattLog.append("  ⚠️ \(service.uuid.uuidString) 特征发现失败：\(error.localizedDescription)")
+        } else {
+            for c in service.characteristics ?? [] {
+                gattLog.append("  CHAR \(c.uuid.uuidString) [\(Self.describe(c.properties))]")
+            }
+        }
+        servicesPending -= 1
+        if servicesPending <= 0 {
+            evaluate(peripheral)
+        }
+    }
+
+    /// 根据已发现的服务，给出「iOS 能不能走通水控协议」的结论
+    private func evaluate(_ peripheral: CBPeripheral) {
+        let services = peripheral.services ?? []
+        guard !services.isEmpty else {
+            gattSummary = "❌ 连上了，但没有任何 GATT 服务"
+            return
+        }
+
+        var found: Set<String> = []
+        for s in services {
+            if let short = Self.shortUUID(s.uuid) { found.insert(short) }
+            for c in s.characteristics ?? [] {
+                if let short = Self.shortUUID(c.uuid) { found.insert(short) }
+            }
+        }
+
+        let hasFF00 = found.contains(Self.serviceFF00)
+        let hasFF01 = found.contains(Self.notifyFF01)
+        let hasFF02 = found.contains(Self.writeFF02)
+
+        gattLog.append("")
+        gattLog.append("识别到 16-bit UUID：\(found.sorted().joined(separator: ", "))")
+
+        if hasFF00 && hasFF01 && hasFF02 {
+            gattSummary = "✅ 找到 FF00 / FF01 / FF02 —— iOS 可以完整走通水控协议"
+        } else if hasFF00 {
+            gattSummary = "⚠️ 有 FF00，但缺 FF01(\(hasFF01 ? "有" : "无")) / FF02(\(hasFF02 ? "有" : "无"))"
+        } else {
+            gattSummary = "❌ 没有 FF00 服务（共 \(services.count) 个服务，\(found.count) 个 16-bit UUID）"
+        }
+    }
+
+    /// 把 CBUUID 转成 16-bit 短格式（如 `FF00`）。
+    ///
+    /// ⚠️ 不能直接 `suffix(4)`：完整 UUID `0000FF00-0000-1000-8000-00805F9B34FB`
+    /// 的后 4 位是 `34FB`，短 UUID 在**第 5–8 位**。
+    static func shortUUID(_ uuid: CBUUID) -> String? {
+        let s = uuid.uuidString.uppercased()
+        if s.count == 4 { return s }
+        if s.count == 36, s.hasPrefix("0000") {
+            let start = s.index(s.startIndex, offsetBy: 4)
+            let end = s.index(start, offsetBy: 4)
+            return String(s[start..<end])
+        }
+        return nil
+    }
+
+    static func describe(_ p: CBCharacteristicProperties) -> String {
+        var parts: [String] = []
+        if p.contains(.read) { parts.append("read") }
+        if p.contains(.write) { parts.append("write") }
+        if p.contains(.writeWithoutResponse) { parts.append("writeNR") }
+        if p.contains(.notify) { parts.append("notify") }
+        if p.contains(.indicate) { parts.append("indicate") }
+        return parts.isEmpty ? "无" : parts.joined(separator: ",")
     }
 }
 
