@@ -95,7 +95,7 @@ struct HomeView: View {
         .task {
             scanner.start()
         }
-        .onChange(of: scanner.devices) { _, list in
+        .onChange(of: scanner.devices) { list in
             // 新出现的设备去查台账
             for d in list {
                 guard let sn = d.parsedSnCode else { continue }
