@@ -375,6 +375,18 @@ final class BLEScanner: NSObject, ObservableObject {
     /// 某台设备是否正在连接/已连接
     func isConnected(_ id: UUID) -> Bool { connectedId == id }
 
+    /// 业务会话（连接/收发由它处理）。
+    ///
+    /// ⚠️ 为什么要有这个：iOS 的 `CBPeripheral` 对象**绑定于创建它的 CBCentralManager**。
+    /// 两个类各建一个 central 时，用 B 的 central 去 connect A 扫描到的 peripheral
+    /// 会报 "One or more parameters were invalid."（实测踩过）。
+    /// 所以全 App 只保留一个 central（本类的），由本类做 CBCentralManagerDelegate，
+    /// 再把 peripheral 级回调转发给业务会话。
+    weak var activeSession: BleSession?
+
+    /// 供业务层连接时复用的 central
+    var manager: CBCentralManager? { central }
+
     /// 取扫描时缓存的 `CBPeripheral`。
     ///
     /// ⚠️ iOS **不能**像 Android 那样用 MAC 直接 `getRemoteDevice()`，
@@ -454,6 +466,10 @@ extension BLEScanner: CBCentralManagerDelegate {
     // MARK: 连接回调（只发现服务，不发命令）
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if let s = activeSession {
+            s.handleDidConnect(peripheral)
+            return
+        }
         gattSummary = "已连接，正在发现服务…"
         peripheral.discoverServices(nil)
     }
@@ -463,6 +479,10 @@ extension BLEScanner: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
+        if let s = activeSession {
+            s.handleDidFailToConnect(error)
+            return
+        }
         gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
         connectedId = nil
     }
@@ -472,6 +492,10 @@ extension BLEScanner: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        if let s = activeSession {
+            s.handleDidDisconnect(error)
+            return
+        }
         if connectedId != nil {
             gattSummary = "已断开\(error.map { "（\($0.localizedDescription)）" } ?? "")"
         }

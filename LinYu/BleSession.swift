@@ -69,7 +69,8 @@ final class BleSession: NSObject, ObservableObject {
 
     // MARK: 内部
 
-    private var central: CBCentralManager?
+    /// ⚠️ 必须复用扫描器的 central：用另一个 central 连接会报 invalid parameters
+    weak var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var writeChar: CBCharacteristic?
     private var notifyChar: CBCharacteristic?
@@ -85,14 +86,19 @@ final class BleSession: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        central = CBCentralManager(delegate: self, queue: .main)
+        // central 由 BLEScanner 注入（见 HomeView），不在这里创建
     }
 
     // MARK: - 连接
 
     /// 用扫描到的 `CBPeripheral` 连接（**iOS 唯一可行的方式**）
     @discardableResult
-    func connect(peripheral p: CBPeripheral, timeout: TimeInterval = 15) async -> Bool {
+    func connect(
+        peripheral p: CBPeripheral,
+        using manager: CBCentralManager,
+        timeout: TimeInterval = 15
+    ) async -> Bool {
+        central = manager
         guard let central else { return false }
         guard central.state == .poweredOn else {
             setPhase(.failed("蓝牙未开启（\(describe(central.state))）"))
@@ -403,57 +409,37 @@ final class BleSession: NSObject, ObservableObject {
     }
 }
 
-// MARK: - CBCentralManagerDelegate
+// MARK: - 由 BLEScanner 转发的连接事件
 
-extension BleSession: CBCentralManagerDelegate {
+extension BleSession {
 
-    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        Task { @MainActor in
-            AppLog.shared.i("BLE 适配器状态：\(self.describe(central.state))")
-        }
+    /// 已连接（BLEScanner 的 CBCentralManagerDelegate 转发过来）
+    func handleDidConnect(_ peripheral: CBPeripheral) {
+        self.peripheral = peripheral
+        peripheral.delegate = self
+        setPhase(.discovering)
+        AppLog.shared.i("BLE 已连接，开始发现服务")
+        peripheral.discoverServices(nil)
     }
 
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didConnect peripheral: CBPeripheral
-    ) {
-        Task { @MainActor in
-            self.setPhase(.discovering)
-            AppLog.shared.i("BLE 已连接，开始发现服务")
-            peripheral.delegate = self
-            peripheral.discoverServices(nil)
-        }
+    func handleDidFailToConnect(_ error: Error?) {
+        let msg = error?.localizedDescription ?? "未知原因"
+        setPhase(.failed("连接失败：\(msg)"))
+        AppLog.shared.w("BLE 连接失败：\(msg)")
+        connectContinuation?.resume(returning: false)
+        connectContinuation = nil
     }
 
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didFailToConnect peripheral: CBPeripheral,
-        error: Error?
-    ) {
-        Task { @MainActor in
-            let msg = error?.localizedDescription ?? "未知原因"
-            self.setPhase(.failed("连接失败：\(msg)"))
-            AppLog.shared.w("BLE 连接失败：\(msg)")
-            self.connectContinuation?.resume(returning: false)
-            self.connectContinuation = nil
+    func handleDidDisconnect(_ error: Error?) {
+        AppLog.shared.w("BLE 已断开" + (error.map { "：\($0.localizedDescription)" } ?? ""))
+        if phase == .ready {
+            setPhase(.failed("连接已断开"))
         }
-    }
-
-    nonisolated func centralManager(
-        _ central: CBCentralManager,
-        didDisconnectPeripheral peripheral: CBPeripheral,
-        error: Error?
-    ) {
-        Task { @MainActor in
-            AppLog.shared.w("BLE 已断开\(error.map { "：\($0.localizedDescription)" } ?? "")")
-            if self.phase == .ready {
-                self.setPhase(.failed("连接已断开"))
-            }
-            self.replyWaiters.values.forEach { $0.resume(returning: nil) }
-            self.replyWaiters.removeAll()
-        }
+        replyWaiters.values.forEach { $0.resume(returning: nil) }
+        replyWaiters.removeAll()
     }
 }
+
 
 // MARK: - CBPeripheralDelegate
 

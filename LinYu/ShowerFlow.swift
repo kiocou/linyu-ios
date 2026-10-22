@@ -71,7 +71,7 @@ final class ShowerFlow: ObservableObject {
     // MARK: - 开阀
 
     /// 完整开阀流程
-    func open(device: DeviceInfo, peripheral: CBPeripheral) async {
+    func open(device: DeviceInfo, peripheral: CBPeripheral, central: CBCentralManager) async {
         guard activeOrder == nil else {
             stage = .failed("已经有一单在进行中")
             return
@@ -80,7 +80,7 @@ final class ShowerFlow: ObservableObject {
 
         // 1. 连接
         stage = .connecting
-        guard await ble.connect(peripheral: peripheral) else {
+        guard await ble.connect(peripheral: peripheral, using: central) else {
             stage = .failed(ble.statusText)
             return
         }

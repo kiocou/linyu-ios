@@ -93,6 +93,8 @@ struct HomeView: View {
             NavigationStack { LogView() }
         }
         .task {
+            // 关键：让扫描器把连接事件转发给业务会话（iOS 只能有一个 central）
+            scanner.activeSession = flow.ble
             scanner.start()
         }
         .onChange(of: scanner.devices) { list in
@@ -244,7 +246,15 @@ struct HomeView: View {
                 resolved[sn] = info
                 AppLog.shared.i("台账命中 \(sn) → \(info.displayName)（deviceId=\(info.deviceId ?? -1)）")
             } else {
-                AppLog.shared.w("台账查不到 \(sn)（success=true 但 data 为空）")
+                // 带上广播原始数据，便于判断是不是另一批厂商的设备
+                let d = scanner.devices.first { $0.parsedSnCode == sn }
+                let detail = [
+                    "manufacturerData: \(d?.manufacturerHex ?? "无")",
+                    "serviceUUIDs: \(d?.serviceUUIDs.joined(separator: ",") ?? "无")",
+                    "name: \(d?.name ?? "无")",
+                    "rssi: \(d?.rssi ?? 0)"
+                ].joined(separator: "\n")
+                AppLog.shared.w("台账查不到 \(sn)（success=true 但 data 为空）", detail)
             }
         } catch {
             AppLog.shared.w("查台账失败 \(sn)：\(error.localizedDescription)")
@@ -258,11 +268,15 @@ struct HomeView: View {
             errorText = "拿不到设备引用，请重新扫描"
             return
         }
+        guard let manager = scanner.manager else {
+            errorText = "蓝牙尚未就绪，请稍后再试"
+            return
+        }
         scanner.stop()
         AppLog.shared.i("点击开水：\(info.displayName)")
 
         Task {
-            await flow.open(device: info, peripheral: p)
+            await flow.open(device: info, peripheral: p, central: manager)
             // 开阀结束（成功或失败）后重新开始扫描
             if flow.activeOrder == nil {
                 scanner.start()
