@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// 把扫描结果落成文本文件，供系统分享面板导出。
 ///
@@ -44,7 +45,7 @@ enum ScanLogStore {
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let model = UIDevice.modelIdentifier
-        let system = "\(UIDevice.systemName) \(UIDevice.systemVersion)"
+        let system = "\(UIDevice.osName) \(UIDevice.osVersion)"
 
         var lines: [String] = []
         lines.append("# LinYu iOS BLE 扫描日志")

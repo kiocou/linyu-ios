@@ -14,8 +14,11 @@ extension UIDevice {
         }
     }
 
-    static var systemName: String { UIDevice.current.systemName }
-    static var systemVersion: String { UIDevice.current.systemVersion }
+    /// 注意：不能叫 `systemName` / `systemVersion`——`UIDevice` 本身已有同名的
+    /// **实例**属性，再定义一个同名 static 属性会让 Swift 在 static 上下文里
+    /// 优先匹配到它自己，报 "static member cannot be used on instance"。
+    static var osName: String { UIDevice.current.systemName }
+    static var osVersion: String { UIDevice.current.systemVersion }
 
     /// 把机型标识映射成人能看懂的名字
     static var friendlyModel: String {

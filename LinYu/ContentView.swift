@@ -55,7 +55,7 @@ enum BuildInfo {
         let build = info?["CFBundleVersion"] as? String ?? "?"
         return """
         版本 \(version) (\(build))
-        \(UIDevice.systemName) \(UIDevice.systemVersion)
+        \(UIDevice.osName) \(UIDevice.osVersion)
         \(UIDevice.friendlyModel)
         """
     }
