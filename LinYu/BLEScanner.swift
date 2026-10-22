@@ -21,6 +21,28 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
     let isConnectable: Bool
     let lastSeen: Date
 
+    /// 名字是否为空（连本地名都没有）
+    var isUnnamed: Bool {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        return n.isEmpty || n == "(无名称)"
+    }
+
+    /// 看起来像不像水控设备——用于默认过滤掉耳机、手环之类。
+    ///
+    /// 三条判据任一命中就算：
+    /// 1. 名称带厂商或品类关键词（`KLCXKJ` / `Water` / `热水` / `水表` …）
+    /// 2. 广播里带厂商自定义数据（普通耳机/手环很少带）
+    /// 3. 广播里带服务数据
+    ///
+    /// ⚠️ 这个判定**只用于默认筛选**，界面上永远可以切到「全部」——
+    /// 不能因为判错就把可能的设备藏掉。
+    var looksLikeWaterMeter: Bool {
+        let n = name.lowercased()
+        let keywords = ["klcxkj", "klcx", "water", "shower", "热水", "水表", "淋浴", "水控"]
+        if keywords.contains(where: { n.contains($0) }) { return true }
+        return manufacturerData != nil || serviceData != nil
+    }
+
     static func == (lhs: DiscoveredPeripheral, rhs: DiscoveredPeripheral) -> Bool {
         lhs.id == rhs.id
             && lhs.rssi == rhs.rssi
