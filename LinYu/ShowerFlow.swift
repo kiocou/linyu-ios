@@ -194,7 +194,7 @@ final class ShowerFlow: ObservableObject {
             protocolType: st.protocolType,
             randomNumber: st.randomNumber,
             startedAt: Date(),
-            preDeductMoney: rateResp.data?.preDeductMoney
+            preDeductMoney: rateResp.data?.preDeductYuan
         )
         stage = .inUse
         startTimer()
@@ -268,7 +268,7 @@ final class ShowerFlow: ObservableObject {
             return
         }
 
-        let upMoney = uploadResp.data?.upMoney ?? uploadResp.data?.upMoneyStr.flatMap(Double.init) ?? 0
+        let upMoney = uploadResp.data?.upMoneyYuan ?? 0
         lastConsumeYuan = upMoney
         AppLog.shared.i("✅ 结算上传成功，金额 \(upMoney) 元")
 
