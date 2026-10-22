@@ -1,15 +1,25 @@
 import SwiftUI
 
-/// 登录页
+/// 登录页 —— 逐条对照 Android 的 `LoginScreen.kt`。
+///
+/// ## 布局和配色是**写死的**，不跟深浅模式走
+///
+/// Android 那张登录卡片是固定白底（`Color.White`），输入框配色也写死
+/// （见 Android `loginFieldColors()` 的注释：用主题色的话，深色模式下
+/// `onSurface` 是浅色，浅色字压在白卡片上就灰蒙蒙一片）。
+/// iOS 这边同样：不管系统深浅，登录页永远是蓝渐变 + 白卡片。
 struct LoginView: View {
     @EnvironmentObject private var session: Session
+
     @State private var phone = ""
     @State private var password = ""
     @State private var smsCode = ""
     @State private var isSmsMode = false
     @State private var busy = false
-    @State private var errorText = ""
+    @State private var errorText: String?
     @State private var countdown = 0
+    /// 进场动画：整块内容 0.8 → 1.0（Android 用 tween(400)）
+    @State private var animated = false
 
     private var canSubmit: Bool {
         if phone.count != 11 { return false }
@@ -17,121 +27,286 @@ struct LoginView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        ZStack {
+            // 背景渐变（三个色标与 Android 完全一致）
+            LinearGradient(
+                colors: [
+                    Color(hex: 0x1A73E8),
+                    Color(hex: 0x0D47A1),
+                    Color(hex: 0x051D40)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            // 装饰圆 ①：左上，280pt，白色 4%
+            Circle()
+                .fill(Color.white.opacity(0.04))
+                .frame(width: 280, height: 280)
+                .offset(x: -120, y: -80)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            // 装饰圆 ②：右下，180pt，白色 6%
+            Circle()
+                .fill(Color.white.opacity(0.06))
+                .frame(width: 180, height: 180)
+                .offset(x: 60, y: 60)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+
             ScrollView {
-                VStack(spacing: 20) {
-                    header
-
-                    Picker("登录方式", selection: $isSmsMode) {
-                        Text("密码").tag(false)
-                        Text("验证码").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-
-                    VStack(spacing: 12) {
-                        TextField("手机号", text: $phone)
-                            .keyboardType(.numberPad)
-                            .textContentType(.telephoneNumber)
-                            .padding(14)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-
-                        if isSmsMode {
-                            HStack(spacing: 10) {
-                                TextField("验证码", text: $smsCode)
-                                    .keyboardType(.numberPad)
-                                    .padding(14)
-                                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-
-                                Button {
-                                    sendCode()
-                                } label: {
-                                    Text(countdown > 0 ? "\(countdown)s" : "获取")
-                                        .frame(width: 64, height: 48)
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(busy || countdown > 0 || phone.count != 11)
-                            }
-                        } else {
-                            SecureField("密码", text: $password)
-                                .textContentType(.password)
-                                .padding(14)
-                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-
-                    if !errorText.isEmpty {
-                        Text(errorText)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    Button {
-                        submit()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if busy {
-                                ProgressView().tint(.white)
-                            } else {
-                                Text("登录").font(.headline)
-                            }
-                            Spacer()
-                        }
-                        .frame(height: 50)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(busy || !canSubmit)
-
-                    Text("登录信息只保存在本机钥匙串（Keychain），不会上传。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-
-                    Spacer(minLength: 40)
+                VStack(spacing: 0) {
+                    logo
+                    card
                 }
-                .padding(24)
+                .padding(.horizontal, 28)
+                .padding(.top, 90)
+                .padding(.bottom, 28)
+                .scaleEffect(animated ? 1.0 : 0.8)
+                .offset(y: -50)
             }
-            .navigationBarHidden(true)
+        }
+        .animation(.easeOut(duration: 0.4), value: animated)
+        .onAppear { animated = true }
+    }
+
+    // MARK: - Logo
+
+    private var logo: some View {
+        VStack(spacing: 0) {
+            // Android 用 app_logo（80dp，圆角 18）。iOS 没有同名资源，
+            // 用白底 + 自绘花洒图标代替，尺寸圆角保持一致
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.white)
+                if let icon = DeviceIcons.icon(for: "🚿") {
+                    VectorIconView(icon: icon, size: 44, tint: Color(hex: 0x1A73E8))
+                } else {
+                    Text("🚿").font(.system(size: 44))
+                }
+            }
+            .frame(width: 80, height: 80)
+
+            Text("淋 浴")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(.white)
+                .padding(.top, 16)
+
+            Text("Hualala · 校园热水")
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.55))
+
+            Spacer()
+                .frame(height: 20)
         }
     }
 
-    private var header: some View {
-        VStack(spacing: 10) {
-            Text("🚿").font(.system(size: 56))
-            Text("淋浴").font(.largeTitle.bold())
-            Text("趣智校园第三方客户端 · iOS")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+    // MARK: - 登录卡片
+
+    private var card: some View {
+        VStack(spacing: 0) {
+            Text("欢迎回来")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundColor(Color(hex: 0x1A1A1A))
+
+            Text("请使用校园账号登录")
+                .font(.system(size: 13))
+                .foregroundColor(.gray)
+                .padding(.top, 4)
+                .padding(.bottom, 20)
+
+            // 密码 / 验证码切换
+            Button {
+                isSmsMode.toggle()
+                errorText = nil
+            } label: {
+                Text(isSmsMode ? "密码登录" : "验证码登录")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: 0x1A73E8))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 16)
+
+            // 当前模式的一句说明。放这儿是因为用户最容易卡住的两个点都在这：
+            // 没注册的人不知道能不能直接用（能，会自动注册），
+            // 没设过密码的人不知道密码该填什么（填不了，用验证码）
+            Text(isSmsMode ? "未注册的手机号将自动创建账号" : "未设置密码？请使用手机号验证码登录")
+                .font(.system(size: 12))
+                .foregroundColor(.gray)
+                .padding(.bottom, 12)
+
+            phoneField
+                .padding(.bottom, 14)
+
+            if isSmsMode { smsField } else { passwordField }
+
+            loginButton
+                .padding(.top, 24)
+
+            if let msg = errorText {
+                Text(msg)
+                    .font(.system(size: 13))
+                    .foregroundColor(Color(hex: 0xC62828))
+                    .multilineTextAlignment(.center)
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(hex: 0xFFFFEBEE))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.top, 16)
+            }
         }
-        .padding(.top, 32)
-        .padding(.bottom, 8)
+        .padding(28)
+        .frame(maxWidth: .infinity)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // 卡片是白底浮在渐变上，这里**必须**给阴影 —— Android 是 shadowElevation 12
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+    }
+
+    // MARK: - 输入框
+
+    private var phoneField: some View {
+        outlinedField(
+            title: "手机号",
+            text: $phone,
+            systemImage: "phone.fill",
+            keyboard: .numberPad,
+            secured: false
+        )
+    }
+
+    private var passwordField: some View {
+        outlinedField(
+            title: "密码",
+            text: $password,
+            systemImage: "lock.fill",
+            keyboard: .default,
+            secured: true
+        )
+    }
+
+    private var smsField: some View {
+        HStack(alignment: .top, spacing: 12) {
+            outlinedField(
+                title: "验证码",
+                text: $smsCode,
+                systemImage: nil,
+                keyboard: .numberPad,
+                secured: false
+            )
+            Button {
+                sendCode()
+            } label: {
+                // 固定宽度 84pt：文案在「发送」↔「60s」之间变化时按钮宽度不变，
+                // 否则会把左边自适应的输入框挤窄/挤宽，看着像抖了一下
+                Text(countdown > 0 ? "\(countdown)s" : "发送")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .frame(width: 84, height: 56)
+                    .background(canSend ? Color(hex: 0x1A73E8) : Color(hex: 0x90CAF9))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+        }
+    }
+
+    private var canSend: Bool { !busy && countdown == 0 && phone.count == 11 }
+
+    /// 统一的外框输入框：圆角 14、蓝色图标、右侧清空按钮
+    /// （对照 Android 的 OutlinedTextField + loginFieldColors）
+    private func outlinedField(
+        title: String,
+        text: Binding<String>,
+        systemImage: String?,
+        keyboard: UIKeyboardType,
+        secured: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15))
+                    .foregroundColor(Color(hex: 0x1A73E8))
+                    .frame(width: 20)
+            }
+
+            Group {
+                if secured {
+                    SecureField(title, text: text)
+                } else {
+                    TextField(title, text: text)
+                }
+            }
+            .font(.system(size: 15))
+            .foregroundColor(Color(hex: 0x1A1A1A))
+            .keyboardType(keyboard)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+
+            if !text.wrappedValue.isEmpty {
+                Button { text.wrappedValue = "" } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.gray)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 56)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color(hex: 0x1A73E8).opacity(0.45), lineWidth: 1)
+        )
+    }
+
+    // MARK: - 登录按钮
+
+    private var loginButton: some View {
+        Button {
+            submit()
+        } label: {
+            ZStack {
+                if busy {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(0.9)
+                } else {
+                    Text("登 录")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(.white)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(canSubmit ? Color(hex: 0x1A73E8) : Color(hex: 0x90CAF9))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy || !canSubmit)
     }
 
     // MARK: - 动作
 
     private func sendCode() {
         guard phone.count == 11 else { return }
-        busy = true
-        errorText = ""
+        countdown = 60
+        startCountdown()
         Task {
             do {
                 try await AuthService.sendSmsCode(phone: phone)
-                busy = false
-                startCountdown()
             } catch {
-                busy = false
-                errorText = error.localizedDescription
+                errorText = Self.friendly(error)
             }
         }
     }
 
     private func startCountdown() {
-        countdown = 60
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { t in
-            if countdown <= 1 {
-                t.invalidate()
-                countdown = 0
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
+            if countdown <= 0 {
+                timer.invalidate()
             } else {
                 countdown -= 1
             }
@@ -139,20 +314,17 @@ struct LoginView: View {
     }
 
     private func submit() {
+        guard !busy else { return }
         busy = true
-        errorText = ""
+        errorText = nil
         Task {
+            defer { busy = false }
             do {
-                let data: LoginData
-                if isSmsMode {
-                    data = try await AuthService.smsLogin(phone: phone, smsCode: smsCode)
-                } else {
-                    data = try await AuthService.login(phone: phone, password: password)
-                }
+                let data = isSmsMode
+                    ? try await AuthService.smsLogin(phone: phone, smsCode: smsCode)
+                    : try await AuthService.login(phone: phone, password: password)
                 AuthService.persist(data, phone: phone)
-                busy = false
             } catch {
-                busy = false
                 errorText = Self.friendly(error)
             }
         }
@@ -160,10 +332,7 @@ struct LoginView: View {
 
     private static func friendly(_ e: Error) -> String {
         let s = e.localizedDescription
-        if s.contains("Unable to resolve host") || s.contains("Network is unreachable") {
-            return "网络连接失败，请检查网络"
-        }
-        if s.lowercased().contains("timeout") { return "请求超时，请重试" }
-        return s
+        if s.contains("登录") || s.contains("密码") || s.contains("验证码") { return s }
+        return "登录失败：\(s)"
     }
 }
