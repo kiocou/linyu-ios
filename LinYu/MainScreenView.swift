@@ -20,6 +20,8 @@ struct MainScreenView: View {
     /// 扫描器由 MainTabView 持有：首页要展示列表，「我的 → 绑定寝室」也要读附近设备，
     /// 两个页面必须共用同一份扫描结果（各建一个会重复扫描、结果还不一致）
     @ObservedObject var scanner: BLEScanner
+    /// 账单/余额缓存，同样由容器持有
+    @ObservedObject var store: AppDataStore
     /// 由 MainTabView 注入，用水页也在那一层切换
     @ObservedObject var flow: ShowerFlow
 
@@ -31,8 +33,8 @@ struct MainScreenView: View {
     @State private var showQr = false
 
     /// 账单（余额估算要用）
-    @State private var bills: [BillDTO] = []
-    @State private var billsLoaded = false
+    
+    
     /// 寝室筛选条件（ViewModel 的等价物：改完要立刻刷新列表）
     @State private var boundRoom = Prefs.boundRoom
     /// 下拉刷新中
@@ -58,7 +60,7 @@ struct MainScreenView: View {
     /// 余额：真实余额优先（一卡通 > 钱包），否则本地估算
     private var displayBalance: Double? {
         if BalanceEstimator.hasRealBalance { return BalanceEstimator.realBalance }
-        return billsLoaded ? BalanceEstimator.estimate(bills) : nil
+        return store.loaded ? BalanceEstimator.estimate(store.bills) : nil
     }
 
     private var balanceText: String {
@@ -125,7 +127,8 @@ struct MainScreenView: View {
         .task {
             // 关键：让扫描器把连接事件转发给业务会话（iOS 只能有一个 central）
             scanner.activeSession = flow.ble
-            await refreshAll()
+            // ⚠️ 首次进页面才拉账单；之后切回来直接复用容器里的缓存
+            await store.loadIfNeeded()
             scanner.start()
         }
         .onChange(of: scanner.devices) { list in
@@ -442,10 +445,7 @@ struct MainScreenView: View {
         refreshing = true
         defer { refreshing = false }
 
-        await BillService.refreshBalances()
-        let list = await BillService.loadHistory()
-        bills = list
-        billsLoaded = true
+        await store.reload()
         boundRoom = Prefs.boundRoom
     }
 

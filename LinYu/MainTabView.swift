@@ -12,6 +12,8 @@ struct MainTabView: View {
     @State private var tab = 0
     /// 会话状态在容器里持有：首页、用水页、我的页共用同一条 BLE 连接
     @StateObject private var flow = ShowerFlow()
+    /// 账单/余额缓存（对照 Android 的 MainViewModel：跨页面存活，切换不重载）
+    @StateObject private var store = AppDataStore()
     /// 扫描器放在容器里：首页展示列表、「我的 → 绑定寝室」读附近设备，共用同一份结果
     @StateObject private var scanner = BLEScanner()
     /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
@@ -40,19 +42,21 @@ struct MainTabView: View {
                 Group {
                     switch tab {
                     case 0:
-                        MainScreenView(scanner: scanner, flow: flow)
+                        MainScreenView(scanner: scanner, flow: flow, store: store)
                             .id(refreshToken)
                     case 1:
-                        WalletScreenView(flow: flow)
+                        WalletScreenView(flow: flow, store: store)
                     default:
                         UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
+                // ⚠️ 只做透明度交叉淡入，**不做位移动画**。
+                // 之前用 .move(edge:) 时，切页瞬间新旧两页同时在屏幕上横向滑动，
+                // 滚动中的长列表会拖出残影，看着像界面被"平移"了一下。
+                // Android 那边的页面是各自独立的 ScrollView、切换由 AnimatedContent
+                // 整体替换，不会有两页并存的观感；iOS 用淡入淡出最接近。
+                .transition(.opacity)
 
                 if !settingsVisible {
                     PillNavBar(currentTab: $tab, colors: colors)
@@ -62,14 +66,23 @@ struct MainTabView: View {
                 }
             }
 
-            // Toast：开阀/结算/扫描的提示都走这一条通道
+            // Toast：开阀/结算/扫描的提示都走这一条通道。
+            //
+            // ⚠️ 位置在**顶部**（对照 Android `LinYuToast` 的 Alignment.TopCenter
+            // + padding(top = 60.dp)），从上方滑入。放底部会和悬浮导航栏打架，
+            // 也和安卓端不一致。
             if let toast = flow.toast, !toast.isEmpty {
                 VStack {
-                    Spacer()
                     LinYuToast(message: toast, isDark: isDark)
-                        .padding(.bottom, flow.activeOrder == nil ? 120 : 48)
-                        .transition(.opacity)
+                        .padding(.top, 60)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .opacity
+                            )
+                        )
                         .allowsHitTesting(false)
+                    Spacer()
                 }
                 .animation(.easeInOut(duration: 0.18), value: toast)
             }

@@ -122,18 +122,24 @@ struct BluetoothRateOrderData: Decodable {
 
 /// `/order/upload/bluetooth/data` 的返回
 struct BluetoothUploadData: Decodable {
-    /// ⚠️ 同样是字符串（如 "0.24"），不能声明成 Double
-    let upMoney: String?
-    let upMoneyStr: String?
+    /// ⚠️ 单位是**厘**（1 元 = 1000 厘）。
+    ///
+    /// Android `BleModels.kt` 里 `upMoney` 声明成 `Int?`，展示前统一过
+    /// `MoneyFormat.milliToYuan`（`WidgetBleService.kt:231` 有注释：
+    /// 「服务端金额单位是厘，换算成元再交给通知」）。
+    /// 直接当元用会**静默放大 1000 倍**。
+    ///
+    /// 另外服务端在不同学校用过 `upMoney` / `consumeMoney` 两个名字，两个都收。
+    let upMoney: AnyNumber?
+    let consumeMoney: AnyNumber?
     let orderNo: String?
     /// 写回设备用的加密数据（`clData`），需要 AES 解密后取 `-` 之后那段
     let clData: String?
     let consumeDate: String?
 
-    /// 展示用：本次消费（元）
+    /// 本次消费（**元**）
     var upMoneyYuan: Double? {
-        guard let s = upMoney ?? upMoneyStr, !s.isEmpty else { return nil }
-        return Double(s)
+        (upMoney?.value ?? consumeMoney?.value).map { $0 / 1000.0 }
     }
 }
 
@@ -143,8 +149,10 @@ struct UsingOrderData: Decodable {
     let orderNo: String?
     let isOwner: Bool?
     let expireTimes: Int?
-    /// ⚠️ 同样是字符串形式
-    let preDeductMoney: String?
+    /// ⚠️ 实测（2026-10-22 projectId=905）这个字段返回的是**数字** `0`，
+    /// 声明成 String 会让整个响应解码失败 —— 日志里表现为
+    /// 「解析失败 queryUsing」，于是关阀后的确认永远拿不到结果。
+    let preDeductMoney: AnyNumber?
 }
 
 // MARK: - 钱包 / 账单
@@ -152,13 +160,16 @@ struct UsingOrderData: Decodable {
 struct WalletData: Decodable {
     let projectId: Int?
     let accountId: Int?
-    /// ⚠️ 都是字符串（实测 "55.460"），不能声明成 Double
-    let accountRealMoney: String?
-    let accountGivenMoney: String?
-    let money: String?
+    /// ⚠️ 三个字段**类型不一样**（实测 projectId=905）：
+    /// `accountRealMoney` / `accountGivenMoney` 是**数字** `0`，
+    /// `money` 是**字符串** `"0.000"`。统一声明成 String 会让整个响应解码失败
+    /// （日志里就是「解析失败 /account/wallet」，钱包余额永远读不到）。
+    let accountRealMoney: AnyNumber?
+    let accountGivenMoney: AnyNumber?
+    let money: AnyNumber?
 
-    var realYuan: Double? { accountRealMoney.flatMap(Double.init) }
-    var moneyYuan: Double? { money.flatMap(Double.init) }
+    var realYuan: Double? { accountRealMoney?.value }
+    var moneyYuan: Double? { money?.value }
 }
 
 /// `/settlement/campus/userInfo`（一卡通余额）
@@ -193,27 +204,41 @@ struct BillDTO: Decodable, Identifiable {
 
     var yuan: Double? { consumeMoney.flatMap(Double.init) }
 
-    /// 设备名（`description` 形如 `项目名:热水表-xxx`）
-    var deviceNamePart: String {
+    /// 冒号之后的**原始**设备名。
+    ///
+    /// ⚠️ 不能过 `formatDeviceName`：那条规则会把 `洗手台54-` 前缀剥掉、
+    /// 还会把结尾的「洗手台」换成「房」。用它判断设备类型的话，
+    /// 洗手台账单会被判成「卫生间热水器」（实测反馈）。
+    /// Android 的 `BillDTO.deviceTypeLabel` 也是直接用 `substringAfter(":")`。
+    var rawNamePart: String {
         let raw = description ?? ""
-        let after = raw.contains(":") ? String(raw.split(separator: ":", maxSplits: 1).last ?? "") : raw
-        return after.isEmpty ? raw : DeviceInfo.formatDeviceName(after)
+        guard let r = raw.range(of: ":") else { return raw }
+        return String(raw[r.upperBound...])
     }
 
+    /// 展示用的设备名（过一遍格式化：去掉「热水表-」「洗手台54-」这类前缀）
+    var displayNamePart: String { DeviceInfo.formatDeviceName(rawNamePart) }
+
+    /// 是否饮水机账单（对照 Android：对**完整 description** 判，不是截取后的名字）
     var isDrinkingWaterBill: Bool {
         let d = description ?? ""
         return d.contains("饮水") || d.contains("直饮") || d.contains("冷水")
     }
 
+    /// 设备类型标签：饮水机 / 洗手台热水器 / 卫生间热水器
     var deviceTypeLabel: String {
+        let d = description ?? ""
         if isDrinkingWaterBill { return "饮水机" }
-        let n = deviceNamePart
-        return n.hasPrefix("洗手台") ? "洗手台热水器" : "卫生间热水器"
+        // ⚠️ 除了判截取后的前缀，还要对**完整 description** 再判一次——
+        // 项目名那半边也可能带「洗手台」
+        if rawNamePart.hasPrefix("洗手台") || d.contains("洗手台") { return "洗手台热水器" }
+        return "卫生间热水器"
     }
 
+    /// 设备 emoji：饮水机 🚰 / 洗手台 🪥 / 热水器 🚿
     var deviceEmoji: String {
         if isDrinkingWaterBill { return "🚰" }
-        return (deviceNamePart.hasPrefix("洗手台")) ? "🪥" : "🚿"
+        return (description ?? "").contains("洗手台") ? "🪥" : "🚿"
     }
 }
 
@@ -287,12 +312,21 @@ struct DownRateResultData: Decodable {
 }
 
 /// `/order/consumeOrder/result/query`
+///
+/// ⚠️ 这个接口的 `consumeMoney` 单位是**厘**（1 元 = 1000 厘），
+/// 和账单列表里同名字段的单位差 1000 倍。忘了换算不是报错，而是**静默错 1000 倍**：
+/// 用了 0.04 元，通知上写成「消费 ¥40.00」。
+///
+/// 实测证据（Android 端 09-18 两笔订单，用 dealDate 对齐）：
+/// 本接口 `40` ↔ 账单列表 `"0.04"`；本接口 `80` ↔ 账单列表 `"0.08"`。
 struct ConsumeResultData: Decodable {
     let orderNo: String?
+    /// 单位：**厘**
     let consumeMoney: AnyNumber?
     let consumeDate: String?
 
-    var yuan: Double? { consumeMoney?.value }
+    /// 换算成元
+    var yuan: Double? { consumeMoney?.value.map { $0 / 1000.0 } }
 }
 
 

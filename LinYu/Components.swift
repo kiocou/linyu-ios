@@ -95,50 +95,30 @@ struct LinYuToast: View {
     let isDark: Bool
 
     var body: some View {
-        Text(message)
-            .font(.system(size: 14))
-            .foregroundStyle(.white)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(
-                (isDark ? Color(hex: 0x2B313C) : Color(hex: 0x1F2937))
-                    .opacity(0.95)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
-            .padding(.horizontal, 40)
+        HStack(spacing: 12) {
+            // Android 这里是 app_logo（32dp）。iOS 没有同名资源，
+            // 用项目自绘的花洒图标替代，同样白色、同样尺寸
+            if let icon = DeviceIcons.icon(for: "\U0001F6BF") {
+                VectorIconView(icon: icon, size: 32, tint: .white)
+            }
+            // ⚠️ 必须单行：多行会把气泡撑成方块，弹出位置也跟着跳
+            Text(message)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(Color(hex: 0x1F2937))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+        .padding(.horizontal, 24)
+        // 宽度上限：超长文案（「已绑定寝室：龙川北苑-3号楼南-3层-320」）要能截断
+        .frame(maxWidth: 420, alignment: .leading)
     }
 }
 
-/// Toast 宿主：在根视图上挂一层，按需淡入淡出
-struct ToastHost<Content: View>: View {
-    @Binding var message: String?
-    let isDark: Bool
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        ZStack {
-            content
-            if let msg = message, !msg.isEmpty {
-                VStack {
-                    Spacer()
-                    LinYuToast(message: msg, isDark: isDark)
-                        .padding(.bottom, 140)
-                }
-                .transition(.opacity)
-                .allowsHitTesting(false)
-            }
-        }
-        .onChange(of: message) { newValue in
-            guard let m = newValue, !m.isEmpty else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                // 只在还是同一条消息时才清掉，避免把后来的消息误关
-                if message == m { message = nil }
-            }
-        }
-    }
-}
 
 // MARK: - 按钮样式
 

@@ -234,6 +234,7 @@ struct UseCodeCardView: View {
 /// ⚠️ iOS 的平台限制必须说清楚：Android 那套「App 被杀也继续监控、发现水被外部关掉就通知」
 /// 依赖前台服务，iOS 做不到。所以这里的开关**只影响 App 在前台/刚回前台时的提示**，
 /// 界面上要如实写明，不能让用户以为关掉/打开就等于安卓端的效果。
+/// 通知设置卡片 —— 逐条对照 Android `UserSettingsCards.NotifyCard`。
 struct NotifyCardView: View {
     @Environment(\.appColors) private var colors
 
@@ -247,37 +248,52 @@ struct NotifyCardView: View {
     var body: some View {
         BaseCard {
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
+                // ── 总开关 ──
+                //
+                // ⚠️ 布局是「文字靠左、开关靠右」（Android 的 SpaceBetween）。
+                // 之前两边一起居中，开关会跟着文字宽度飘，看着不像设置项。
+                HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("通知")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(colors.textPrimary)
-                        Text(enabled ? "已开启" : "已关闭")
-                            .font(.system(size: 12))
+                        Text(enabled ? "用水期间和结束时收到系统提醒" : "已关闭全部通知")
+                            .font(.system(size: 13))
                             .foregroundStyle(colors.textSecondary)
                     }
-                    Spacer()
+                    Spacer(minLength: 12)
                     Toggle("", isOn: $enabled)
                         .labelsHidden()
                         .tint(colors.accent)
-                        .onChange(of: enabled) { v in
-                            Prefs.notifyEnabled = v
-                            if v { expanded = true }
-                        }
+                        .onChange(of: enabled) { v in Prefs.notifyEnabled = v }
                 }
 
                 if enabled {
-                    CollapsibleHeader(title: expanded ? "收起详细设置" : "详细设置", expanded: expanded) {
-                        expanded.toggle()
-                    }
-                    if expanded {
-                        VStack(spacing: 10) {
-                            switchRow("开始用水时提醒", $inUse) { Prefs.notifyInUse = $0 }
-                            switchRow("结束用水时提醒", $finished) { Prefs.notifyFinished = $0 }
-                            switchRow("自动关停时提醒", $autoClose) { Prefs.notifyAutoClose = $0 }
-                            switchRow("异常告警", $alert) { Prefs.notifyAlert = $0 }
+                    // ── 展开入口 ──
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+                    } label: {
+                        HStack {
+                            Text("详细设置")
+                                .font(.system(size: 13))
+                                .foregroundStyle(colors.accent)
+                            Spacer()
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(colors.accent)
                         }
-                        .padding(.top, 4)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 10)
+
+                    if expanded {
+                        // 文案逐条照搬 Android 的 NotifyRow（标题 + 说明 + 开关靠右）
+                        notifyRow("用水状态通知", "使用期间在通知栏显示已用时间", $inUse) { Prefs.notifyInUse = $0 }
+                        notifyRow("使用结束通知", "停止后显示用时和消费金额", $finished) { Prefs.notifyFinished = $0 }
+                        notifyRow("自动关停提醒", "设备超时自己关闭时提醒", $autoClose) { Prefs.notifyAutoClose = $0 }
+                        notifyRow("横幅提醒", "开阀失败、设备被占用时从屏幕顶部弹出", $alert) { Prefs.notifyAlert = $0 }
                     }
 
                     Text("iOS 不支持安卓那种「App 被杀后继续监控」的后台服务，所以这里的提醒只在 App 运行时出现。用水结束的金额仍可在账单里查到。")
@@ -290,21 +306,29 @@ struct NotifyCardView: View {
         }
     }
 
-    private func switchRow(
-        _ label: String,
+    /// 一条细分开关：**标题 + 说明在左，开关固定在右**
+    private func notifyRow(
+        _ title: String,
+        _ desc: String,
         _ value: Binding<Bool>,
         onChange: @escaping (Bool) -> Void
     ) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 14))
-                .foregroundStyle(colors.textPrimary)
-            Spacer()
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14))
+                    .foregroundStyle(colors.textPrimary)
+                Text(desc)
+                    .font(.system(size: 11))
+                    .foregroundStyle(colors.textSecondary)
+            }
+            Spacer(minLength: 12)
             Toggle("", isOn: value)
                 .labelsHidden()
                 .tint(colors.accent)
                 .onChange(of: value.wrappedValue) { v in onChange(v) }
         }
+        .padding(.vertical, 6)
     }
 }
 
@@ -546,6 +570,11 @@ struct UpdateCardView: View {
     @State private var checking = false
     @State private var checked = false
 
+    /// .ipa 安装教程。iOS 侧载要自签，必须看教程才知道怎么做
+    private static let tutorialURL = URL(
+        string: "https://github.com/yehu-imei/Guides/blob/main/Tutorial/.ipa%E7%9A%84%E5%AE%89%E8%A3%85"
+    )
+
     private var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
@@ -568,9 +597,13 @@ struct UpdateCardView: View {
                         .foregroundStyle(colors.textSecondary)
                 }
                 Spacer()
-                if hasUpdate, let url = latestURL, let u = URL(string: url) {
+                // ⚠️ iOS **不能像 Android 那样下载 apk 直接覆盖安装**——
+                // 侧载 ipa 必须自己签名（7 天还得重签），给用户一个下载链接
+                // 等于给个装不上的文件。所以这里不提供「去下载」，
+                // 一律指向安装教程。
+                if let u = Self.tutorialURL {
                     Link(destination: u) {
-                        Text("去下载")
+                        Text("看教程")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 16)

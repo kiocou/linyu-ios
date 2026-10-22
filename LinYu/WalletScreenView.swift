@@ -8,22 +8,21 @@ struct WalletScreenView: View {
     @Environment(\.appColors) private var colors
 
     @ObservedObject var flow: ShowerFlow
+    /// 账单/余额由容器层持有（对照 Android 的 MainViewModel），
+    /// 页面切走再切回来不会重新请求
+    @ObservedObject var store: AppDataStore
 
-    /// 完整账单（最近 3 个月），趋势图用
-    @State private var bills: [BillDTO] = []
-    @State private var loading = false
-    @State private var loaded = false
     @State private var detailBill: BillDTO?
     @State private var showEditDialog = false
     @State private var editValue = ""
     @State private var trendEnabled = Prefs.trendEnabled
 
     /// 列表只显示最近 20 次（对照 Android 的 `billList = all.take(20)`）
-    private var recent: [BillDTO] { Array(bills.prefix(20)) }
+    private var recent: [BillDTO] { Array(store.bills.prefix(20)) }
 
     private var displayBalance: Double? {
         if BalanceEstimator.hasRealBalance { return BalanceEstimator.realBalance }
-        return loaded ? BalanceEstimator.estimate(bills) : nil
+        return store.loaded ? BalanceEstimator.estimate(store.bills) : nil
     }
 
     var body: some View {
@@ -41,7 +40,7 @@ struct WalletScreenView: View {
                         .padding(.top, 16)
 
                     if trendEnabled {
-                        SpendingTrendCard(bills: bills, loading: loading && !loaded)
+                        SpendingTrendCard(bills: store.bills, loading: store.loading && !store.loaded)
                             .padding(.top, 24)
                     }
 
@@ -54,7 +53,7 @@ struct WalletScreenView: View {
                         .foregroundStyle(colors.textSecondary)
                         .padding(.top, 2)
 
-                    if loading && !loaded {
+                    if store.loading && !store.loaded {
                         HStack {
                             Spacer()
                             ProgressView().tint(colors.accent)
@@ -80,7 +79,7 @@ struct WalletScreenView: View {
                 .padding(20)
             }
             .clipped()
-            .refreshable { await load() }
+            .refreshable { await store.reload() }
         }
         .task { await load() }
         .onAppear { trendEnabled = Prefs.trendEnabled }
@@ -149,7 +148,7 @@ struct WalletScreenView: View {
         } label: {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(bill.deviceEmoji) \(bill.deviceNamePart)")
+                    Text("\(bill.deviceEmoji) \(bill.displayNamePart)")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(colors.textPrimary)
                         .lineLimit(1)
@@ -179,7 +178,7 @@ struct WalletScreenView: View {
         DialogScrim(onTapOutside: { detailBill = nil }) {
             AlertCard(title: "账单详情", titleAlign: .leading) {
                 VStack(spacing: 0) {
-                    DetailRowView(label: "设备名", value: dto.deviceNamePart)
+                    DetailRowView(label: "设备名", value: dto.displayNamePart)
                     DetailRowView(label: "设备类型", value: dto.deviceTypeLabel)
                     DetailRowView(label: "消费金额", value: "-¥ \(dto.consumeMoney ?? "0")")
                     DetailRowView(label: "消费时间", value: String((dto.consumeDate ?? "").prefix(19)))
@@ -220,13 +219,7 @@ struct WalletScreenView: View {
     // MARK: - 加载
 
     private func load() async {
-        loading = true
-        defer { loading = false }
-
-        // 真实余额只在这里和首页各拉一次；漏了这一页，先进账单页会一直按「估算」渲染
-        await BillService.refreshBalances()
-        bills = await BillService.loadHistory()
-        loaded = true
+        await store.loadIfNeeded()
         trendEnabled = Prefs.trendEnabled
     }
 }

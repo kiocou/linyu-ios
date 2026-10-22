@@ -88,7 +88,6 @@ struct UserScreenView: View {
     @State private var showSettings = false
     @State private var showLog = false
     @State private var editMode = false
-    @State private var showLogoutConfirm = false
 
     @State private var profileOrder: [UserCardType] = UserCardLayout.restore(
         defaults: UserCardLayout.profileDefaults,
@@ -121,23 +120,6 @@ struct UserScreenView: View {
         .onChange(of: showSettings) { v in settingsVisible = v }
         .sheet(isPresented: $showLog) {
             NavigationStack { LogView() }
-        }
-        .overlay {
-            if showLogoutConfirm {
-                ConfirmDialogView(
-                    title: "确认退出",
-                    message: "确定退出登录？",
-                    confirmTitle: "退出",
-                    destructive: true,
-                    onConfirm: {
-                        showLogoutConfirm = false
-                        showSettings = false
-                        flow.reset()
-                        session.logout()
-                    },
-                    onDismiss: { showLogoutConfirm = false }
-                )
-            }
         }
     }
 
@@ -186,8 +168,12 @@ struct UserScreenView: View {
                     moveToProfile(type)
                 }
 
+                // ⚠️ 对照 Android：退出登录**没有二次确认弹窗**，
+                // 就是一个描边按钮（danger 色、圆角 14、满宽），点了直接退。
                 Button {
-                    showLogoutConfirm = true
+                    showSettings = false
+                    flow.reset()
+                    session.logout()
                 } label: {
                     Text("退出登录")
                         .font(.system(size: 15, weight: .medium))

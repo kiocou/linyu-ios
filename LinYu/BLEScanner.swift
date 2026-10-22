@@ -105,12 +105,29 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
     /// 里面绝大多数是耳机、手环、共享设备，那样筛等于没筛。
     ///
     /// 这个判定**只用于默认筛选**，界面上永远可以切到「全部」。
+    /// 是不是热水器——**直接对照 Android `BluetoothScanner.onScanResult`**。
+    ///
+    /// Android 的判据就一行：
+    /// ```kotlin
+    /// val deviceName = device.name ?: return
+    /// if (deviceName.contains("KLCXKJ-Water", ignoreCase = true)) { ... }
+    /// ```
+    /// 也就是说 **名字不含 `KLCXKJ-Water` 的一律不收**，扫描结果里根本不会出现
+    /// 打印机（Paperang）、耳机、手环这些东西。
+    ///
+    /// 只加一条 iOS 特有的补偿：iOS 的 `CBPeripheral.name` 读的是系统缓存，
+    /// 缓存没命中就是 `nil`（Android 的 `device.name` 更可靠）。这时退一步，
+    /// 用「广播 UUID 含 FEE7 **且**能解析出 8B/0000 开头的 snCode」兜住，
+    /// 免得整台设备凭空消失。**兜底也要求两条同时成立**，不能只看一条，
+    /// 否则又会把带 manufacturerData 的杂设备放进来。
     var looksLikeWaterMeter: Bool {
-        if hasKlcxkjService { return true }
-        if parsedSnCode != nil { return true }
-        let n = name.lowercased()
-        let keywords = ["klcxkj", "klcx", "water", "shower", "热水", "水表", "淋浴", "水控"]
-        return keywords.contains(where: { n.contains($0) })
+        if name.localizedCaseInsensitiveContains("KLCXKJ-Water") { return true }
+        return hasKlcxkjService && parsedSnCode != nil
+    }
+
+    /// 命中了热水器的**名字**（用于 UI 上标「certain」）
+    var hasWaterMeterName: Bool {
+        name.localizedCaseInsensitiveContains("KLCXKJ-Water")
     }
 
     /// 识别可信度，用于界面上区分"确定"和"可能"
