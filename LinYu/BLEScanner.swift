@@ -187,7 +187,10 @@ final class BLEScanner: NSObject, ObservableObject {
     @MainActor
     @discardableResult
     func queryState() async -> [UInt8]? {
-        guard let peripheral, writeCharacteristic != nil else {
+        guard let id = connectedId,
+              let target = peripherals[id],
+              writeCharacteristic != nil
+        else {
             queryResult = "还没有连接设备，或没找到 FF02 写入特征"
             return nil
         }
@@ -202,7 +205,7 @@ final class BLEScanner: NSObject, ObservableObject {
         let wire = BleFrame.cmdToWire(cmd: 0x23, data: [0])
         gattLog.append("→ 发送 0x23：\(BleFrame.toHex(wire))")
 
-        guard await writeChunks(wire, to: peripheral) else {
+        guard await writeChunks(wire, to: target) else {
             queryResult = "❌ 写入失败（分片未被接受或超时）"
             return nil
         }
