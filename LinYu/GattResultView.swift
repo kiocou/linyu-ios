@@ -45,6 +45,32 @@ struct GattResultView: View {
 
             Section {
                 Button {
+                    Task { await scanner.queryState() }
+                } label: {
+                    HStack {
+                        Label("查询设备状态（0x23）", systemImage: "waveform.path.ecg")
+                        Spacer()
+                        if scanner.isQuerying {
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(scanner.isQuerying || scanner.connectedId == nil)
+
+                if !scanner.queryResult.isEmpty {
+                    Text(scanner.queryResult)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("读取设备状态（只读）")
+            } footer: {
+                Text("只发送状态查询，不下发费率、不开阀、不动钱。成功后能看到 state / randomNumber / devType —— 这些是开阀的前置条件。")
+                    .font(.caption2)
+            }
+
+            Section {
+                Button {
                     let text = scanner.gattSummary + "\n\n" + scanner.gattLog.joined(separator: "\n")
                     UIPasteboard.general.string = text
                     copied = true
