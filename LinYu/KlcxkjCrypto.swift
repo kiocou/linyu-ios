@@ -43,6 +43,9 @@ enum KlcxkjCrypto {
     private static func aesEcbDecrypt(_ data: Data) -> Data? {
         let keyData = Data(aesKey.utf8)
         var out = Data(count: data.count + kCCBlockSizeAES128)
+        // ⚠️ 必须在 withUnsafeMutableBytes 之前取出容量：
+        // 在闭包里访问 out.count 会构成对 out 的「重叠独占访问」，Swift 直接报错
+        let outCapacity = out.count
         var outLength = 0
 
         let status = out.withUnsafeMutableBytes { outBytes -> CCCryptorStatus in
@@ -64,7 +67,7 @@ enum KlcxkjCrypto {
                         keyPtr, keyData.count,
                         nil,                          // ECB 不需要 IV
                         dataPtr, data.count,
-                        outPtr, out.count,
+                        outPtr, outCapacity,
                         &outLength
                     )
                 }
