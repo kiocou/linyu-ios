@@ -166,8 +166,8 @@ struct UseCodeCardView: View {
                     if let code, !code.isEmpty {
                         let prefix = String(code.dropLast(3))
                         let suffix = String(code.suffix(3))
-                        (Text(prefix).foregroundStyle(colors.textPrimary)
-                         + Text(suffix).foregroundStyle(colors.accent))
+                        (Text(prefix).foregroundColor(colors.textPrimary)
+                         + Text(suffix).foregroundColor(colors.accent))
                             .font(.system(size: 28, weight: .black))
                             .tracking(6)
                     } else if loaded {

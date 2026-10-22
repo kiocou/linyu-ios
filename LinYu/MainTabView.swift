@@ -40,7 +40,7 @@ struct MainTabView: View {
                 Group {
                     switch tab {
                     case 0:
-                        MainScreenView(flow: flow, scanner: scanner)
+                        MainScreenView(scanner: scanner, flow: flow)
                             .id(refreshToken)
                     case 1:
                         WalletScreenView(flow: flow)
