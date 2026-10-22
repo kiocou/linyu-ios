@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// 用水页 —— 对照 Android 的 `ShowerScreen.kt`。
+/// 用水页 —— 逐条对照 Android 的 `ShowerScreen.kt`。
 ///
-/// 布局是**垂直居中**的一列：emoji → 状态 → 位置 → 预扣卡片 → 计时 → 结束按钮。
-/// 背景是纵向渐变（浅色冷蓝、深色靛蓝），不是纯色。
+/// 布局是**垂直居中**的一列：图标 → 状态 → 位置 → 预扣卡片 → 计时 → 结束按钮。
+/// 背景是纵向渐变（浅色冷蓝 `E3F2FD→90CAF9`、深色靛蓝 `1A237E→3949AB`），不是纯色。
+///
+/// ⚠️ 左下角那行「费率 0.041元/升」是硬编码的说明文字，Android 也是写死的
+/// （服务端费率不在本地，写死的是**这个项目的默认费率**，仅作参考）。
 struct ShowerScreenView: View {
     let emoji: String
     let statusText: String
@@ -43,8 +46,8 @@ struct ShowerScreenView: View {
 
             ScrollView {
                 VStack(spacing: 0) {
-                    Text(emoji)
-                        .font(.system(size: 72))
+                    // 72pt 图标（和 Android 的 `DeviceGlyph(emoji, 72.sp, 72.dp)` 同尺寸）
+                    PlainGlyph(emoji: emoji, size: 72, tint: .white)
                         .padding(.bottom, 8)
 
                     Text(statusText)
@@ -56,7 +59,7 @@ struct ShowerScreenView: View {
                         .foregroundStyle(colors.textSecondary)
                         .padding(.top, 4)
 
-                    // 预扣金额
+                    // 预扣金额卡片
                     VStack(spacing: 4) {
                         Text("💧 已预扣 ¥\(remaining)")
                             .font(.system(size: 18, weight: .bold))
@@ -141,6 +144,7 @@ struct ShowerScreenView: View {
                 .frame(maxWidth: .infinity, minHeight: 640)
                 .padding(.top, 40)
             }
+            .clipped()
 
             // 左上角返回（不结束用水）
             Button(action: onMinimize) {

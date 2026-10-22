@@ -1,16 +1,23 @@
 import SwiftUI
 
-/// 三 Tab 容器 —— 对照 Android 的底部导航（首页 / 账单 / 我的）。
+/// 三 Tab 容器 —— 对照 Android 的 `MainActivity`。
 ///
-/// 用水时**整屏**切成 `ShowerScreenView`（不显示导航栏），
-/// 和 Android 一致：进用水页就没有底栏了。
+/// - 用水时**整屏**切成 `ShowerScreenView`，不显示底部导航（和 Android 一致）
+/// - Tab 切换是弹性左右滑移（Android 用 `AnimatedContent` + spring 420/0.78）
+/// - Toast 挂在这一层，因为开阀/结算的提示可能发生在任意 Tab
 struct MainTabView: View {
     @Environment(\.appColors) private var colors
     @Environment(\.isDarkMode) private var isDark
 
     @State private var tab = 0
-    /// 会话状态在容器里持有，首页和用水页共用同一条 BLE 连接
+    /// 会话状态在容器里持有：首页、用水页、我的页共用同一条 BLE 连接
     @StateObject private var flow = ShowerFlow()
+    /// 扫描器放在容器里：首页展示列表、「我的 → 绑定寝室」读附近设备，共用同一份结果
+    @StateObject private var scanner = BLEScanner()
+    /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
+    @State private var settingsVisible = false
+    /// 从首页改完设置（寝室筛选等）要让首页刷新，用一个计数器触发
+    @State private var refreshToken = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -23,8 +30,8 @@ struct MainTabView: View {
                     location: order.device.displayName,
                     remaining: preDeductText(order),
                     elapsedSec: order.elapsedSeconds,
-                    autoDisConSec: 0,
-                    isStopping: isClosing,
+                    autoDisConSec: order.autoDisConRemain,
+                    isStopping: flow.isStopping,
                     onStop: { Task { await flow.close() } },
                     onMinimize: {}
                 )
@@ -33,27 +40,48 @@ struct MainTabView: View {
                 Group {
                     switch tab {
                     case 0:
-                        MainScreenView(flow: flow)
+                        MainScreenView(flow: flow, scanner: scanner)
+                            .id(refreshToken)
                     case 1:
-                        WalletScreenView()
+                        WalletScreenView(flow: flow)
                     default:
-                        UserScreenView()
+                        UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
 
-                PillNavBar(currentTab: $tab, colors: colors)
-                    .padding(.bottom, 22)
-                    .padding(.horizontal, 24)
+                if !settingsVisible {
+                    PillNavBar(currentTab: $tab, colors: colors)
+                        .padding(.bottom, 22)
+                        .padding(.horizontal, 24)
+                        .transition(.opacity)
+                }
+            }
+
+            // Toast：开阀/结算/扫描的提示都走这一条通道
+            if let toast = flow.toast, !toast.isEmpty {
+                VStack {
+                    Spacer()
+                    LinYuToast(message: toast, isDark: isDark)
+                        .padding(.bottom, flow.activeOrder == nil ? 120 : 48)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
+                .animation(.easeInOut(duration: 0.18), value: toast)
             }
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: tab)
         .animation(.easeInOut(duration: 0.22), value: flow.activeOrder != nil)
-    }
-
-    private var isClosing: Bool {
-        switch flow.stage {
-        case .closing, .collecting, .uploading, .writingBack: return true
-        default: return false
+        .onChange(of: flow.toast) { value in
+            guard let msg = value, !msg.isEmpty else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                // 只在还是同一条消息时才清，避免把后来的新消息误关
+                if flow.toast == msg { flow.toast = nil }
+            }
         }
     }
 

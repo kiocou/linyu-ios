@@ -46,22 +46,34 @@ struct LegendDot: View {
 
 // MARK: - 设备图标
 
-/// 设备图标块：彩色圆角底 + emoji
+/// 设备图标块：彩色圆角底 + 图标
+///
+/// 花洒 / 牙刷用项目自己的矢量图标（`DeviceIcons`），其余（饮水机）仍画 emoji——
+/// 和 Android 的 `DeviceGlyph` 完全一致：那张映射表只覆盖这两个，
+/// 数据层继续用 emoji 字符串，老数据零迁移。
+///
+/// ⚠️ 图标固定用**白色**：它压在设备类型色的圆底上（洗手台橙、饮水机绿、其余蓝），
+/// 单色图标跟底色同色就糊了。
 struct DeviceGlyph: View {
     let emoji: String
     var boxSize: CGFloat = 48
     var cornerRadius: CGFloat = 14
     var emojiSize: CGFloat = 22
+    var iconSize: CGFloat = 26
     let background: Color
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(background)
             .frame(width: boxSize, height: boxSize)
-            .overlay(
-                Text(emoji)
-                    .font(.system(size: emojiSize))
-            )
+            .overlay {
+                if let icon = DeviceIcons.icon(for: emoji) {
+                    VectorIconView(icon: icon, size: iconSize, tint: .white)
+                } else {
+                    Text(emoji)
+                        .font(.system(size: emojiSize))
+                }
+            }
     }
 
     /// 按设备 emoji 取底色（对照 Android 的 ActiveOrderCard）
@@ -153,5 +165,27 @@ struct PressableCardStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.spring(response: 0.25, dampingFraction: 0.8), value: configuration.isPressed)
+    }
+}
+
+// MARK: - 无底色图标
+
+/// 只画图标 / emoji，**不带底色**。
+///
+/// 用水页那个 72pt 的大图标就是这种：它直接压在渐变背景上。
+/// 首页卡片里的 `DeviceGlyph` 有彩色圆底（为了和卡片背景拉开层次），
+/// 两者不能混用——用水页套个圆底会变成一个突兀的色块。
+struct PlainGlyph: View {
+    let emoji: String
+    var size: CGFloat
+    var tint: Color = .white
+
+    var body: some View {
+        if let icon = DeviceIcons.icon(for: emoji) {
+            VectorIconView(icon: icon, size: size, tint: tint)
+        } else {
+            Text(emoji)
+                .font(.system(size: size))
+        }
     }
 }

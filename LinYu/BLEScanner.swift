@@ -152,6 +152,7 @@ final class BLEScanner: NSObject, ObservableObject {
     private var peripherals: [UUID: CBPeripheral] = [:]
     /// 是否已经自动开过一次扫描——避免用户手动停止后，蓝牙状态变化又把它拉起来
     private var didAutoStart = false
+    private var scanTimer: Timer?
 
     // MARK: - 连接与服务检查（只读，不发任何命令）
 
@@ -395,11 +396,28 @@ final class BLEScanner: NSObject, ObservableObject {
         peripherals[id]
     }
 
+    /// 按 snCode 取扫描时缓存的 `CBPeripheral`。
+    ///
+    /// 「上次使用设备」和「扫码绑定」都只有 snCode，但要连蓝牙就必须拿到这个对象
+    /// （iOS 不能像 Android 那样 `getRemoteDevice(mac)` 新建一个）。
+    func peripheral(forSn sn: String) -> CBPeripheral? {
+        guard !sn.isEmpty else { return nil }
+        guard let d = devices.first(where: { $0.parsedSnCode == sn }) else { return nil }
+        return peripherals[d.id]
+    }
+
     override init() {
         super.init()
         // 构造时就建 manager，系统会在需要时弹蓝牙权限
         central = CBCentralManager(delegate: self, queue: .main)
     }
+
+    /// 一次扫描的时长（秒）。
+    ///
+    /// 对照 Android 的 `startScan(timeoutMillis = 5_000)`：热水器广播间隔很短，
+    /// **5 秒足够扫全**，再久只是让用户干等、还更费电。
+    /// 之前 iOS 这边没有超时，会一直扫下去——列表不停变动，用户永远等不到「扫完了」。
+    static let scanDuration: TimeInterval = 5
 
     func start() {
         devices.removeAll()
@@ -409,12 +427,15 @@ final class BLEScanner: NSObject, ObservableObject {
         guard let central else { return }
         if central.state == .poweredOn {
             beginScan(central)
+            scheduleAutoStop()
         } else {
             stateText = "等待蓝牙就绪（当前：\(describe(central.state))）"
         }
     }
 
     func stop() {
+        scanTimer?.invalidate()
+        scanTimer = nil
         guard let central, central.state == .poweredOn else {
             isScanning = false
             return
@@ -422,6 +443,34 @@ final class BLEScanner: NSObject, ObservableObject {
         central.stopScan()
         isScanning = false
         stateText = "已停止（本次扫到 \(devices.count) 台）"
+    }
+
+    /// 5 秒后自动停，并排一次序
+    private func scheduleAutoStop() {
+        scanTimer?.invalidate()
+        scanTimer = Timer.scheduledTimer(withTimeInterval: Self.scanDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.finishScan() }
+        }
+    }
+
+    /// 扫描结束。
+    ///
+    /// ⚠️ 排序只在**结束后做一次**，不能实时排：扫描过程中 RSSI 一直小幅波动，
+    /// 实时重排会让列表不停跳动，用户正要点的那台被挪走 → 点错设备。
+    /// 在澡堂里点错意味着替别人付了水费（Android 注释里专门写了这条）。
+    private func finishScan() {
+        scanTimer?.invalidate()
+        scanTimer = nil
+        guard isScanning else { return }
+
+        if let central, central.state == .poweredOn {
+            central.stopScan()
+        }
+        isScanning = false
+        // 按 RSSI 降序：排最前面的就是离手机最近的那台，通常正是用户面前这个位置
+        devices = devices.sorted { $0.rssi > $1.rssi }
+        stateText = devices.isEmpty ? "扫描完成，未发现设备" : "扫描完成（\(devices.count) 台）"
+        AppLog.shared.i("BLE 扫描完成：\(devices.count) 台（已按信号强度排序）")
     }
 
     // MARK: - 私有
@@ -460,6 +509,7 @@ extension BLEScanner: CBCentralManagerDelegate {
         if central.state == .poweredOn && !didAutoStart {
             didAutoStart = true
             beginScan(central)
+            scheduleAutoStop()
         }
     }
 

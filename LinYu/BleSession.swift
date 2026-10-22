@@ -76,6 +76,10 @@ final class BleSession: NSObject, ObservableObject {
     private var notifyChar: CBCharacteristic?
 
     private var connectContinuation: CheckedContinuation<Bool, Never>?
+    /// 当前这一片写入的序号（超时闭包靠它判断「还是不是我这片」）
+    private var writeToken = 0
+    /// 单片写入超时（秒）
+    static let writeTimeout: TimeInterval = 3
     private var writeContinuation: CheckedContinuation<Bool, Never>?
     private var replyWaiters: [UInt8: CheckedContinuation<[UInt8]?, Never>] = [:]
     private var rxBuffer = Data()
@@ -197,17 +201,42 @@ final class BleSession: NSObject, ObservableObject {
         return ok
     }
 
+    /// 关阀结果。
+    ///
+    /// 为什么不是 Bool：`0x22` 有三种有意义的结局，混成「成功/失败」会让上层做错事——
+    /// - `.alreadyClosed`（实测返回 `81 01`）是**水已经关了**，必须继续结算，
+    ///   不能提示「关阀失败」让用户反复点
+    /// - `.noReply` 才是真的没有证据，这时水可能还在流，**不能退出使用页**
+    enum ValveCloseResult {
+        case ok
+        case alreadyClosed
+        case noReply
+
+        var waterStopped: Bool { self == .ok || self == .alreadyClosed }
+    }
+
     /// 关阀 `0x22`
-    func closeValve(timeout: TimeInterval = 10) async -> Bool {
-        guard phase == .ready else { return false }
+    func closeValve(timeout: TimeInterval = 8) async -> ValveCloseResult {
+        guard phase == .ready else {
+            AppLog.shared.w("0x22 未能发送：BLE 未就绪（\(phase)）")
+            return .noReply
+        }
         drainIncoming()
         guard let payload = await sendAndAwait(cmd: Self.cmdClose, data: [0], timeout: timeout) else {
             AppLog.shared.w("0x22 无应答")
-            return false
+            return .noReply
         }
-        let ok = payload.first == Self.ackOK
-        AppLog.shared.i("0x22 关阀\(ok ? "成功" : "失败")：\(BleFrame.toHexSpaced(payload))")
-        return ok
+        if payload.first == Self.ackOK {
+            AppLog.shared.i("0x22 关阀成功：\(BleFrame.toHexSpaced(payload))")
+            return .ok
+        }
+        // `81 01` = 设备已处于关闭状态（重复关阀时会出现）
+        if payload.first == 0x81 {
+            AppLog.shared.i("0x22 设备已是关闭状态：\(BleFrame.toHexSpaced(payload))")
+            return .alreadyClosed
+        }
+        AppLog.shared.w("0x22 关阀失败：\(BleFrame.toHexSpaced(payload))")
+        return .noReply
     }
 
     /// 采集消费数据 `0x85`
@@ -260,8 +289,21 @@ final class BleSession: NSObject, ObservableObject {
             let len = min(Self.chunkSize, wire.count - offset)
             let chunk = Array(wire[offset..<(offset + len)])
 
+            writeToken += 1
+            let token = writeToken
             let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
                 writeContinuation = cont
+                // ⚠️ 每片必须有自己的超时：`didWriteValueFor` 可能因为断开、
+                // 特征被回收、或设备在过渡态而不回调。没有超时的话
+                // `close()` 会**永久卡在 writeChunks**——真机上表现为
+                // 「一直显示正在关闭」，用户只能杀进程。
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.writeTimeout) { [weak self] in
+                    guard let self, self.writeToken == token,
+                          let c = self.writeContinuation else { return }
+                    self.writeContinuation = nil
+                    AppLog.shared.w("分片 \(index) 写入超时（\(Int(Self.writeTimeout))s）")
+                    c.resume(returning: false)
+                }
                 peripheral.writeValue(Data(chunk), for: char, type: .withResponse)
             }
 

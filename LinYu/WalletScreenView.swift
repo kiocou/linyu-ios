@@ -1,248 +1,232 @@
 import SwiftUI
 
-/// 账单页 —— 对照 Android 的 `WalletScreen.kt`。
+/// 账单页 —— 逐条对照 Android 的 `WalletScreen.kt`。
 ///
-/// 结构：余额卡片（一卡通 + 钱包）→ 月份切换 → 当月账单列表。
+/// 自上而下：余额标题 → 余额卡 → 消费趋势 → 账单（**最近 20 次**）→ 账单详情弹窗。
 struct WalletScreenView: View {
+    @EnvironmentObject private var session: Session
     @Environment(\.appColors) private var colors
 
-    @State private var month = Self.currentMonth()
+    @ObservedObject var flow: ShowerFlow
+
+    /// 完整账单（最近 3 个月），趋势图用
     @State private var bills: [BillDTO] = []
     @State private var loading = false
-    @State private var walletMoney: Double?
-    @State private var campusMoney: Double?
-    @State private var campusSigned = false
-    @State private var errorText: String?
+    @State private var loaded = false
+    @State private var detailBill: BillDTO?
+    @State private var showEditDialog = false
+    @State private var editValue = ""
+    @State private var trendEnabled = Prefs.trendEnabled
 
-    private static func currentMonth() -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        return f.string(from: Date())
-    }
+    /// 列表只显示最近 20 次（对照 Android 的 `billList = all.take(20)`）
+    private var recent: [BillDTO] { Array(bills.prefix(20)) }
 
-    private var monthTotal: Double {
-        bills.reduce(0) { $0 + ($1.yuan ?? 0) }
+    private var displayBalance: Double? {
+        if BalanceEstimator.hasRealBalance { return BalanceEstimator.realBalance }
+        return loaded ? BalanceEstimator.estimate(bills) : nil
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("账单")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(colors.textPrimary)
-                    .padding(.top, 8)
+        ZStack {
+            colors.background.ignoresSafeArea()
 
-                balanceCard
-                monthPicker
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // 标题按**钱在哪**写：一卡通 → 「一卡通余额」，钱包 → 「趣智校园余额」
+                    Text(BalanceEstimator.title)
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(colors.textPrimary)
 
-                if loading && bills.isEmpty {
-                    HStack {
-                        Spacer()
-                        ProgressView().tint(colors.accent)
-                        Spacer()
+                    balanceCard
+                        .padding(.top, 16)
+
+                    if trendEnabled {
+                        SpendingTrendCard(bills: bills, loading: loading && !loaded)
+                            .padding(.top, 24)
                     }
-                    .padding(.top, 40)
-                } else if bills.isEmpty {
-                    VStack(spacing: 6) {
-                        Text(errorText ?? "本月还没有消费记录")
-                            .font(.system(size: 14))
-                            .foregroundStyle(colors.textSecondary)
-                        if errorText != nil {
-                            Button("重试") { Task { await load() } }
-                                .font(.system(size: 13))
-                                .foregroundStyle(colors.accent)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40)
-                } else {
-                    Text("共 \(bills.count) 笔 · 合计 ¥\(String(format: "%.2f", monthTotal))")
+
+                    Text("账单")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(colors.textPrimary)
+                        .padding(.top, 24)
+                    Text("最近20次消费记录")
                         .font(.system(size: 12))
                         .foregroundStyle(colors.textSecondary)
+                        .padding(.top, 2)
 
-                    ForEach(bills) { bill in
-                        billRow(bill)
+                    if loading && !loaded {
+                        HStack {
+                            Spacer()
+                            ProgressView().tint(colors.accent)
+                            Spacer()
+                        }
+                        .padding(24)
+                    } else if recent.isEmpty {
+                        Text("暂无账单数据")
+                            .font(.system(size: 14))
+                            .foregroundStyle(colors.textSecondary)
+                            .padding(.top, 12)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(recent) { bill in
+                                billCard(bill)
+                            }
+                        }
+                        .padding(.top, 12)
                     }
-                }
 
-                Spacer().frame(height: 120)
+                    Color.clear.frame(height: 100)   // 给悬浮导航栏留位置
+                }
+                .padding(20)
             }
-            .padding(.horizontal, 20)
+            .clipped()
+            .refreshable { await load() }
         }
-        .scrollIndicators(.hidden)
         .task { await load() }
+        .onAppear { trendEnabled = Prefs.trendEnabled }
+        .overlay {
+            if let b = detailBill {
+                billDetailDialog(b)
+            }
+            if showEditDialog {
+                manualBalanceDialog
+            }
+        }
     }
 
-    // MARK: 余额
+    // MARK: - 余额卡
 
     private var balanceCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("账户余额")
-                .font(.system(size: 12))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("账户余额 (元)")
+                    .font(.system(size: 14))
+                    .foregroundStyle(colors.textSecondary)
+                Spacer()
+                // 拿到真实余额后「手动填写」就藏起来：估算值会被真实值覆盖，
+                // 摆在那儿只会让人以为填了能改数字
+                if !BalanceEstimator.hasRealBalance {
+                    Button {
+                        // 预填**当前显示的余额**，不是上次填的初始值
+                        editValue = displayBalance.map { MoneyFormat.format($0) }
+                            ?? (Prefs.manualBalance.isEmpty ? "0" : Prefs.manualBalance)
+                        showEditDialog = true
+                    } label: {
+                        Text("手动填写")
+                            .font(.system(size: 13))
+                            .foregroundStyle(colors.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text(displayBalance.map { "¥ \(MoneyFormat.format($0))" } ?? "¥ —")
+                .font(.system(size: 36, weight: .bold))
+                .foregroundStyle(colors.textPrimary)
+                .padding(.top, 4)
+
+            Text(BalanceEstimator.sourceText)
+                .font(.system(size: 11))
                 .foregroundStyle(colors.textSecondary)
-
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("¥")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(colors.textPrimary)
-                Text(walletMoney.map { String(format: "%.2f", $0) } ?? "—")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .foregroundStyle(colors.textPrimary)
-            }
-
-            Divider().overlay(colors.border)
-
-            HStack(spacing: 16) {
-                miniBalance(
-                    "校园卡",
-                    value: campusMoney.map { String(format: "%.2f", $0) },
-                    note: campusSigned ? "已签约免密" : "未签约"
-                )
-                miniBalance("钱包", value: walletMoney.map { String(format: "%.2f", $0) }, note: "趣智余额")
-            }
+                .padding(.top, 8)
         }
-        .padding(20)
+        .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .linyuCard(colors)
     }
 
-    private func miniBalance(_ title: String, value: String?, note: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 12))
-                .foregroundStyle(colors.textSecondary)
-            Text(value.map { "¥\($0)" } ?? "—")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(colors.textPrimary)
-            Text(note)
-                .font(.system(size: 10))
-                .foregroundStyle(colors.textSecondary.opacity(0.7))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: - 账单卡片
 
-    // MARK: 月份切换
+    private func billCard(_ bill: BillDTO) -> some View {
+        let typeColor: Color = bill.isDrinkingWaterBill
+            ? Color(hex: 0x10B981)
+            : (bill.deviceTypeLabel.contains("洗手台") ? Color(hex: 0xFF9800) : colors.accent)
 
-    private var monthPicker: some View {
-        HStack {
-            Button {
-                shiftMonth(-1)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(colors.accent)
-                    .frame(width: 32, height: 32)
+        return Button {
+            detailBill = bill
+        } label: {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(bill.deviceEmoji) \(bill.deviceNamePart)")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(colors.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    Text(bill.deviceTypeLabel)
+                        .font(.system(size: 12))
+                        .foregroundStyle(typeColor)
+                    Text(String((bill.consumeDate ?? "").prefix(16)))
+                        .font(.system(size: 12))
+                        .foregroundStyle(colors.textSecondary)
+                }
+                Spacer(minLength: 12)
+                Text("-¥ \(bill.consumeMoney ?? "0")")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(colors.danger)
             }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Text(month)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(colors.textPrimary)
-
-            Spacer()
-
-            Button {
-                shiftMonth(1)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(canGoForward ? colors.accent : colors.textSecondary.opacity(0.35))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-            .disabled(!canGoForward)
+            .padding(14)
+            .frame(maxWidth: .infinity)
+            .linyuCard(colors, radius: 14)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .linyuCard(colors, radius: 16)
+        .buttonStyle(PressableCardStyle())
     }
 
-    private var canGoForward: Bool {
-        month < Self.currentMonth()
-    }
+    // MARK: - 弹窗
 
-    private func shiftMonth(_ delta: Int) {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM"
-        guard let d = f.date(from: month),
-              let next = Calendar.current.date(byAdding: .month, value: delta, to: d)
-        else { return }
-        month = f.string(from: next)
-        Task { await load() }
-    }
-
-    // MARK: 账单行
-
-    private func billRow(_ bill: BillDTO) -> some View {
-        HStack(spacing: 14) {
-            DeviceGlyph(
-                emoji: bill.deviceEmoji,
-                boxSize: 42,
-                cornerRadius: 12,
-                emojiSize: 20,
-                background: DeviceGlyph.background(for: bill.deviceEmoji, colors: colors)
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                TailEllipsisText(
-                    text: bill.deviceNamePart.isEmpty ? "热水器" : bill.deviceNamePart,
-                    weight: .medium,
-                    color: colors.textPrimary
-                )
-                Text(bill.deviceTypeLabel + " · " + (bill.consumeDate?.prefix(16).description ?? ""))
-                    .font(.system(size: 11))
-                    .foregroundStyle(colors.textSecondary)
-                    .lineLimit(1)
+    private func billDetailDialog(_ dto: BillDTO) -> some View {
+        DialogScrim(onTapOutside: { detailBill = nil }) {
+            AlertCard(title: "账单详情", titleAlign: .leading) {
+                VStack(spacing: 0) {
+                    DetailRowView(label: "设备名", value: dto.deviceNamePart)
+                    DetailRowView(label: "设备类型", value: dto.deviceTypeLabel)
+                    DetailRowView(label: "消费金额", value: "-¥ \(dto.consumeMoney ?? "0")")
+                    DetailRowView(label: "消费时间", value: String((dto.consumeDate ?? "").prefix(19)))
+                    DetailRowView(label: "订单号", value: dto.orderId ?? "-")
+                }
+            } actions: {
+                DialogFilledButton(title: "确定", color: colors.accent) { detailBill = nil }
             }
-
-            Spacer(minLength: 4)
-
-            Text(bill.yuan.map { String(format: "¥%.2f", $0) } ?? "—")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                .foregroundStyle(colors.textPrimary)
         }
-        .padding(14)
-        .linyuCard(colors, radius: 18)
     }
 
-    // MARK: 数据
+    private var manualBalanceDialog: some View {
+        DialogScrim(onTapOutside: { showEditDialog = false }) {
+            AlertCard(title: "手动填写余额", titleAlign: .leading) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("请输入账户当前余额")
+                        .font(.system(size: 14))
+                        .foregroundStyle(colors.textSecondary)
+                    Text("此操作仅用于本地估算，不会修改账户真实余额")
+                        .font(.system(size: 11))
+                        .foregroundStyle(colors.textSecondary)
+                    TextField("余额 (元)", text: $editValue)
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.top, 8)
+                }
+            } actions: {
+                DialogTextButton(title: "取消", color: colors.accent) { showEditDialog = false }
+                DialogFilledButton(title: "保存", color: colors.accent) {
+                    Prefs.manualBalance = editValue
+                    Prefs.manualBalanceTime = Date().timeIntervalSince1970 * 1000
+                    showEditDialog = false
+                }
+            }
+        }
+    }
+
+    // MARK: - 加载
 
     private func load() async {
         loading = true
-        errorText = nil
+        defer { loading = false }
 
-        // 余额（两个接口都可以失败，失败就显示 —）
-        if let w = try? await ApiClient.get("/account/wallet", tag: "wallet"),
-           let wr = try? ApiClient.decode(WalletData.self, from: w, path: "wallet"),
-           let data = wr.data {
-            walletMoney = data.realYuan ?? data.moneyYuan
-        }
-        if let c = try? await ApiClient.get("/settlement/campus/userInfo", tag: "campus"),
-           let cr = try? ApiClient.decode(CampusUserInfo.self, from: c, path: "campus"),
-           let data = cr.data {
-            campusMoney = data.yuan
-            campusSigned = (data.signStatus == 1)
-        }
-
-        // 账单
-        do {
-            let data = try await ApiClient.get(
-                "/order/query/account/bill/list",
-                query: ["month": month, "billRequestType": "2"],
-                tag: "bills"
-            )
-            let resp = try ApiClient.decode([BillItem].self, from: data, path: "bills")
-            bills = (resp.data ?? []).compactMap { $0.consumeBillDTO }
-                .sorted { ($0.consumeDate ?? "") > ($1.consumeDate ?? "") }
-        } catch {
-            errorText = error.localizedDescription
-            bills = []
-        }
-
-        loading = false
+        // 真实余额只在这里和首页各拉一次；漏了这一页，先进账单页会一直按「估算」渲染
+        await BillService.refreshBalances()
+        bills = await BillService.loadHistory()
+        loaded = true
+        trendEnabled = Prefs.trendEnabled
     }
 }

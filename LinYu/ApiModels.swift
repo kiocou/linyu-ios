@@ -49,9 +49,21 @@ struct DeviceInfo: Decodable {
     let roomName: String?
     let buildingName: String?
     let floorName: String?
+    /// 预扣金额（元）。服务端有的学校给数字、有的给字符串，用 AnyNumber 兜住
+    let withholdMoney: AnyNumber?
+    /// 通信类型 id（服务端字段 `communicationTypeId`），仅作诊断，不参与判定
+    let communicationTypeId: Int?
 
-    /// 是否蓝牙表：服务端标记为真
-    var needsBluetooth: Bool { isBle == true }
+    /// 预扣金额（元）
+    var withholdYuan: Double? { withholdMoney?.value }
+
+    /// 是否「只能靠手机蓝牙直连控制」的水表。
+    ///
+    /// ⚠️ **只认服务端标记 `isBle`**，不能用 `smallTypeId == 1` 兜底——
+    /// Android 的 DeviceModels.kt 里明确写了：两所学校的 4G 表 `smallTypeId` 也都是 1，
+    /// 拿它判断会把正常的云端表拦下来（表现为「这台设备打不开」）。
+    /// 服务端不返回 `isBle` 时只能当普通表试一次，失败后再问用户要不要改用蓝牙。
+    var needsBluetoothControl: Bool { isBle == true }
 
     // displayName / typeEmoji / statusText 等展示逻辑在 DeviceInfoDisplay.swift
     // （那边是逐条对照 Android DeviceModels.kt 的完整实现，别在这里重复）
@@ -222,4 +234,82 @@ struct ProjectInfo: Decodable {
     let projectId: Int?
     let projectName: String?
     let serverPhone: String?
+}
+
+
+// MARK: - 宽松数字
+
+/// 服务端数字字段有的给数字、有的给字符串（`\"preDeductMoney\":\"5.0\"`）。
+///
+/// 直接声明成 `Double` 会因类型不符导致**整个响应**解码失败 ——
+/// 这在 `bluetoothRateOrder` 上真机踩过（表现为「解析失败 bluetoothRateOrder」，
+/// 开阀第二步就断了）。包一层之后三种形式都能读，读不出来算 nil。
+struct AnyNumber: Decodable {
+    let value: Double?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let d = try? c.decode(Double.self) { value = d; return }
+        if let i = try? c.decode(Int.self) { value = Double(i); return }
+        if let s = try? c.decode(String.self) { value = Double(s); return }
+        value = nil
+    }
+
+    init(_ v: Double?) { value = v }
+}
+
+// MARK: - 云端（4G）通道
+
+/// `/order/tcpDevice/downRate/rateOrder` 的返回
+struct DownRateData: Decodable {
+    let autoDisConTime: Int?
+    let orderNo: String?
+    let consumeDate: String?
+    let state: Int?
+    let result: Int?
+    let preDeductMoney: AnyNumber?
+    let rate: AnyNumber?
+
+    var preDeductYuan: Double? { preDeductMoney?.value }
+}
+
+/// `/order/tcpDevice/query/downRateResult`
+struct DownRateResultData: Decodable {
+    let orderNo: String?
+    let autoDisConTime: Int?
+    let state: Int?
+    let result: Int?
+    let snCode: String?
+    let preDeductMoney: AnyNumber?
+
+    /// 开阀成功判据（对照 Android）：`state == 0 || result == 0 || orderNo != nil`
+    var looksOpened: Bool { state == 0 || result == 0 || orderNo != nil }
+}
+
+/// `/order/consumeOrder/result/query`
+struct ConsumeResultData: Decodable {
+    let orderNo: String?
+    let consumeMoney: AnyNumber?
+    let consumeDate: String?
+
+    var yuan: Double? { consumeMoney?.value }
+}
+
+
+// MARK: - 使用码
+
+/// `GET /account/useCode/new`
+///
+/// ⚠️ 字段一律可空：**没领过码时服务端真的返回 `"useCode": null`**。
+/// 写成非可选会让整个响应解码失败，界面就永远停在「加载中」。
+struct UseCodeData: Decodable {
+    let useCode: String?
+    /// 1 = 开启，0 = 关闭
+    let useCodeStatus: Int?
+    /// 手机号后三位（和 useCode 末三位相同）
+    let useCodeRandom: String?
+    let useCodeStartTime: String?
+    /// 今天还能不能重新领取：1 = 能，0 = 不能
+    let resetAvailability: Int?
+    let resetAvailabilityWarMark: String?
 }
