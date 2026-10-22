@@ -375,6 +375,14 @@ final class BLEScanner: NSObject, ObservableObject {
     /// 某台设备是否正在连接/已连接
     func isConnected(_ id: UUID) -> Bool { connectedId == id }
 
+    /// 取扫描时缓存的 `CBPeripheral`。
+    ///
+    /// ⚠️ iOS **不能**像 Android 那样用 MAC 直接 `getRemoteDevice()`，
+    /// 唯一可行的连接方式是拿扫描到的这个对象去 `connect`。
+    func peripheral(for id: UUID) -> CBPeripheral? {
+        peripherals[id]
+    }
+
     override init() {
         super.init()
         // 构造时就建 manager，系统会在需要时弹蓝牙权限

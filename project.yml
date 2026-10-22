@@ -28,8 +28,8 @@ targets:
       path: LinYu/Info.plist
       properties:
         CFBundleDisplayName: 淋浴
-        CFBundleShortVersionString: "0.5.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "10"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
