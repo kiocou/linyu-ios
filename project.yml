@@ -1,0 +1,43 @@
+name: LinYu
+
+options:
+  bundleIdPrefix: com.hualala
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # 空壳验证阶段先不签名：GitHub Actions 上没有开发者证书，
+    # 产出未签名 ipa，由本地 Sideloadly 用 Apple ID 自签后安装。
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
+targets:
+  LinYu:
+    type: application
+    platform: iOS
+    sources:
+      - path: LinYu
+        excludes:
+          - Info.plist
+    info:
+      path: LinYu/Info.plist
+      properties:
+        CFBundleDisplayName: 淋浴
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 后续做 BLE 时必须声明，先放上避免忘记
+        NSBluetoothAlwaysUsageDescription: 用于搜索并连接校园热水器，控制开阀与关阀
+        NSBluetoothPeripheralUsageDescription: 用于连接校园热水器
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hualala.linyu
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: "NO"

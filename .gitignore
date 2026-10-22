@@ -1,0 +1,26 @@
+# Xcode
+build/
+DerivedData/
+*.xcarchive
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# XcodeGen 生成的工程（由 project.yml 生成，不入库）
+LinYu.xcodeproj/
+
+# 依赖
+Pods/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# 签名相关，绝不入库
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+
+# 本地产物
+*.ipa
