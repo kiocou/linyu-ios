@@ -53,8 +53,8 @@ struct DeviceInfo: Decodable {
     /// 是否蓝牙表：服务端标记为真
     var needsBluetooth: Bool { isBle == true }
 
-    /// 展示名（去掉学校前缀那类冗余）
-    var displayName: String { deviceName ?? deviceDesc ?? snCode ?? "未知设备" }
+    // displayName / typeEmoji / statusText 等展示逻辑在 DeviceInfoDisplay.swift
+    // （那边是逐条对照 Android DeviceModels.kt 的完整实现，别在这里重复）
 
     /// 用于蓝牙连接的地址
     ///
@@ -133,4 +133,93 @@ struct UsingOrderData: Decodable {
     let expireTimes: Int?
     /// ⚠️ 同样是字符串形式
     let preDeductMoney: String?
+}
+
+// MARK: - 钱包 / 账单
+
+struct WalletData: Decodable {
+    let projectId: Int?
+    let accountId: Int?
+    /// ⚠️ 都是字符串（实测 "55.460"），不能声明成 Double
+    let accountRealMoney: String?
+    let accountGivenMoney: String?
+    let money: String?
+
+    var realYuan: Double? { accountRealMoney.flatMap(Double.init) }
+    var moneyYuan: Double? { money.flatMap(Double.init) }
+}
+
+/// `/settlement/campus/userInfo`（一卡通余额）
+struct CampusUserInfo: Decodable {
+    let studentNumber: String?
+    let studentName: String?
+    /// 字符串（如 "16.76"）
+    let amount: String?
+    /// 1 = 已签约免密支付
+    let signStatus: Int?
+
+    var yuan: Double? { amount.flatMap(Double.init) }
+}
+
+/// `/order/query/account/bill/list` 的一项 —— 外面套一层 `consumeBillDTO`
+struct BillItem: Decodable {
+    let consumeBillDTO: BillDTO?
+}
+
+struct BillDTO: Decodable, Identifiable {
+    /// 账单**序号**（7 位），和 orderNo 不是一回事
+    let orderId: String?
+    let consumeDate: String?
+    let consumeMoney: String?
+    let description: String?
+    /// 下单时返回的 20 位 orderNo（关阀用）
+    let orderNo: String?
+    let preDeductMoney: String?
+    let deviceSnCode: String?
+
+    var id: String { orderId ?? consumeDate ?? UUID().uuidString }
+
+    var yuan: Double? { consumeMoney.flatMap(Double.init) }
+
+    /// 设备名（`description` 形如 `项目名:热水表-xxx`）
+    var deviceNamePart: String {
+        let raw = description ?? ""
+        let after = raw.contains(":") ? String(raw.split(separator: ":", maxSplits: 1).last ?? "") : raw
+        return after.isEmpty ? raw : DeviceInfo.formatDeviceName(after)
+    }
+
+    var isDrinkingWaterBill: Bool {
+        let d = description ?? ""
+        return d.contains("饮水") || d.contains("直饮") || d.contains("冷水")
+    }
+
+    var deviceTypeLabel: String {
+        if isDrinkingWaterBill { return "饮水机" }
+        let n = deviceNamePart
+        return n.hasPrefix("洗手台") ? "洗手台热水器" : "卫生间热水器"
+    }
+
+    var deviceEmoji: String {
+        if isDrinkingWaterBill { return "🚰" }
+        return (deviceNamePart.hasPrefix("洗手台")) ? "🪥" : "🚿"
+    }
+}
+
+/// `/account/info`
+struct AccountInfo: Decodable {
+    let name: String?
+    let idCardNumber: String?
+    let telephone: String?
+    let genderName: String?
+    let cardStatus: Int?
+    let cardStatusName: String?
+    let gradeName: String?
+    let className: String?
+}
+
+/// `/project/info/triple`
+struct ProjectInfo: Decodable {
+    let projectId: Int?
+    let projectName: String?
+    let serverPhone: String?
 }
