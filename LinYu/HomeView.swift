@@ -76,6 +76,8 @@ struct HomeView: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
             }
+        }
+        .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Text(session.displayName.isEmpty ? "已登录" : session.displayName)
