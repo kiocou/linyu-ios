@@ -373,6 +373,9 @@ struct ConfirmDialogView: View {
     let message: String
     let confirmTitle: String
     var destructive: Bool = false
+    /// 取消键文案。传 nil 表示**不显示取消键**
+    /// （对照 Android：只有能退出时才给 dismissButton「取消」）
+    var cancelTitle: String? = "取消"
     let onConfirm: () -> Void
     let onDismiss: () -> Void
 
@@ -384,7 +387,9 @@ struct ConfirmDialogView: View {
                     .foregroundStyle(colors.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .center)
             } actions: {
-                DialogTextButton(title: "取消", color: colors.accent, action: onDismiss)
+                if let cancelTitle {
+                    DialogTextButton(title: cancelTitle, color: colors.accent, action: onDismiss)
+                }
                 DialogTextButton(
                     title: confirmTitle,
                     color: destructive ? colors.danger : colors.accent,

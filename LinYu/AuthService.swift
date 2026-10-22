@@ -44,7 +44,15 @@ enum AuthService {
     /// 发送短信验证码
     ///
     /// `secret` 是按手机号动态算的：`MD5(前3位 + 后4位 + "klcx")`
-    static func sendSmsCode(phone: String) async throws {
+    /// 发短信验证码。
+    ///
+    /// ⚠️ `typeId` 决定这条验证码的用途，服务端按用途校验，**发错类型会一直提示错误**：
+    /// | typeId | 用途 |
+    /// |---|---|
+    /// | 3 | 登录（默认） |
+    /// | 2 | 修改密码（发到**当前绑定**手机号） |
+    /// | 5 | 更换手机号（发到**新**手机号） |
+    static func sendSmsCode(phone: String, typeId: Int = 3) async throws {
         guard phone.count == 11 else {
             throw ApiError.transport("请输入 11 位手机号")
         }
@@ -55,7 +63,7 @@ enum AuthService {
         _ = try await ApiClient.get("/user/verification/code/get", query: [
             "telephone": phone,
             "secret": secret,
-            "typeId": "3",
+            "typeId": String(typeId),
             "platform": "1"
         ], tag: "smsCode")
     }

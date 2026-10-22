@@ -62,12 +62,22 @@ struct LoginView: View {
                 .padding(.horizontal, 28)
                 .padding(.top, 90)
                 .padding(.bottom, 28)
+                // ⚠️ 动画**只绑定 animated 这一个值**，并且只作用于 scale。
+                // 之前把 .animation 挂在最外层 ZStack 上，结果切换密码/验证码
+                // 模式时整块内容（含输入框切换）都被套上 0.4s 缓动，
+                // 看起来就是「渐隐 + 平移」的残影。
                 .scaleEffect(animated ? 1.0 : 0.8)
+                .animation(.easeOut(duration: 0.4), value: animated)
                 .offset(y: -50)
             }
         }
-        .animation(.easeOut(duration: 0.4), value: animated)
-        .onAppear { animated = true }
+        .onAppear {
+            animated = true
+            // 回填上次保存的凭据：手机号总是填；密码只有上次是**密码登录**才有。
+            // 验证码是一次性的，不存。
+            if phone.isEmpty, let saved = SavedCredential.phone { phone = saved }
+            if password.isEmpty, let saved = SavedCredential.password { password = saved }
+        }
     }
 
     // MARK: - Logo
@@ -76,16 +86,12 @@ struct LoginView: View {
         VStack(spacing: 0) {
             // Android 用 app_logo（80dp，圆角 18）。iOS 没有同名资源，
             // 用白底 + 自绘花洒图标代替，尺寸圆角保持一致
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(Color.white)
-                if let icon = DeviceIcons.icon(for: "🚿") {
-                    VectorIconView(icon: icon, size: 44, tint: Color(hex: 0x1A73E8))
-                } else {
-                    Text("🚿").font(.system(size: 44))
-                }
-            }
-            .frame(width: 80, height: 80)
+            // 和 Android 一样用 app_logo（`R.drawable.app_logo`，80dp、圆角 18）
+            Image("app_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 80, height: 80)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             Text("淋 浴")
                 .font(.system(size: 30, weight: .bold))
@@ -244,6 +250,8 @@ struct LoginView: View {
             .keyboardType(keyboard)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
+            // 告诉系统这个框是什么，iOS 的密码自动填充才能识别并回填
+            .textContentType(secured ? .password : (title == "手机号" ? .username : .oneTimeCode))
 
             if !text.wrappedValue.isEmpty {
                 Button { text.wrappedValue = "" } label: {
@@ -323,6 +331,8 @@ struct LoginView: View {
                 let data = isSmsMode
                     ? try await AuthService.smsLogin(phone: phone, smsCode: smsCode)
                     : try await AuthService.login(phone: phone, password: password)
+                // 验证码是一次性的，只有密码登录才存——下次打开自动填好，一键登录
+                if !isSmsMode { SavedCredential.save(phone: phone, password: password) }
                 AuthService.persist(data, phone: phone)
             } catch {
                 errorText = Self.friendly(error)

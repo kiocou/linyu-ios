@@ -96,11 +96,12 @@ struct LinYuToast: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Android 这里是 app_logo（32dp）。iOS 没有同名资源，
-            // 用项目自绘的花洒图标替代，同样白色、同样尺寸
-            if let icon = DeviceIcons.icon(for: "🚿") {
-                VectorIconView(icon: icon, size: 32, tint: .white)
-            }
+            // 和 Android 一样用 app_logo（`R.drawable.app_logo`，32dp）
+            Image("app_logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             // ⚠️ 必须单行：多行会把气泡撑成方块，弹出位置也跟着跳
             Text(message)
                 .font(.system(size: 14, weight: .medium))

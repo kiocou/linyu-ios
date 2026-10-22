@@ -24,18 +24,24 @@ targets:
       - path: LinYu
         excludes:
           - Info.plist
+      # 图片资源（app_logo.png 从 Android 的 res/drawable-nodpi 搬过来，
+      # 登录页 80pt、Toast 32pt 用的就是它）
+      - path: LinYu/Resources
+        type: folder
     info:
       path: LinYu/Info.plist
       properties:
         CFBundleDisplayName: 淋浴
-        CFBundleShortVersionString: "2.2.0"
-        CFBundleVersion: "22"
+        CFBundleShortVersionString: "3.1.0"
+        CFBundleVersion: "16"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # 后续做 BLE 时必须声明，先放上避免忘记
         NSBluetoothAlwaysUsageDescription: 用于搜索并连接校园热水器，控制开阀与关阀
         NSBluetoothPeripheralUsageDescription: 用于连接校园热水器
+        # 扫码绑定设备要用相机（对照 Android 的 QrScanActivity）
+        NSCameraUsageDescription: 用于扫描设备二维码以绑定设备
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hualala.linyu

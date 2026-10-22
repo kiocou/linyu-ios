@@ -52,7 +52,7 @@ struct MainScreenView: View {
         guard !boundRoom.isEmpty else { return scanned }
         return scanned.filter { d in
             let sn = d.parsedSnCode ?? ""
-            let name = resolved[sn]?.deviceName ?? d.name
+            let name = store.deviceInfos[sn]?.deviceName ?? d.name
             return DeviceInfo.inSameRoom(boundKey: boundRoom, deviceName: name)
         }
     }
@@ -74,7 +74,9 @@ struct MainScreenView: View {
 
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    Color.clear.frame(height: 8)
+                    // ⚠️ 顶部留白和账单页 / 我的页一致（都是 20），
+                    // 否则三个 tab 的标题不在同一高度
+                    Color.clear.frame(height: 20)
                     header
 
                     // 使用中的设备
@@ -129,12 +131,16 @@ struct MainScreenView: View {
             scanner.activeSession = flow.ble
             // ⚠️ 首次进页面才拉账单；之后切回来直接复用容器里的缓存
             await store.loadIfNeeded()
-            scanner.start()
+            // ⚠️ 只在**还没有扫到设备**时才启动扫描。
+            // 之前每次切回首页都重新 start()，而 start() 会清空列表，
+            // 于是设备先闪回广播名（KLCXKJ-Water）再变回房间名。
+            // Android 那边是下拉刷新才重新扫描。
+            if scanner.devices.isEmpty { scanner.start() }
         }
         .onChange(of: scanner.devices) { list in
             for d in list {
                 guard let sn = d.parsedSnCode else { continue }
-                guard resolved[sn] == nil, !resolving.contains(sn) else { continue }
+                guard store.deviceInfos[sn] == nil, !resolving.contains(sn) else { continue }
                 resolving.insert(sn)
                 Task { await resolveDevice(sn) }
             }
@@ -395,10 +401,12 @@ struct MainScreenView: View {
 
     private func deviceCard(_ d: DiscoveredPeripheral) -> some View {
         let sn = d.parsedSnCode ?? ""
-        let info = resolved[sn]
+        let info = store.deviceInfos[sn]
         let sigColor: Color = d.rssi >= -70 ? colors.success
             : (d.rssi >= -85 ? colors.warning : colors.danger)
-        let sigLabel = d.rssi >= -70 ? "强" : (d.rssi >= -85 ? "中" : "弱")
+        // ⚠️ 文案照搬 Android `NearbyDevice.signalText`：`"信号强度: $rssi dBm"`
+        // ——就是这一句，不要自己改成「强/中/弱」之类的说法
+        let sigLabel = "信号强度: \(d.rssi) dBm"
 
         return Button {
             Task { await openDetail(sn) }
@@ -419,7 +427,7 @@ struct MainScreenView: View {
                         .foregroundStyle(colors.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.head)
-                    Text("信号\(sigLabel)（\(d.rssi) dBm）")
+                    Text(sigLabel)
                         .font(.system(size: 13))
                         .foregroundStyle(sigColor)
                     Text("MAC: \(sn)")
@@ -450,30 +458,17 @@ struct MainScreenView: View {
     }
 
     /// 查台账
+    /// 查台账。结果存在 `AppDataStore` 里（跨页面保留），
+    /// 所以切走再切回来**不会**再显示一次广播名
     private func resolveDevice(_ sn: String) async {
-        defer { resolving.remove(sn) }
-        do {
-            let data = try await ApiClient.get(
-                "/device/info/mac",
-                query: ["macAddress": sn],
-                tag: "deviceInfo"
-            )
-            let resp = try ApiClient.decode(DeviceInfo.self, from: data, path: "deviceInfo")
-            if resp.success, let info = resp.data {
-                resolved[sn] = info
-            } else {
-                AppLog.shared.w("台账查不到 \(sn)（success=\(resp.success) data=\(resp.data == nil ? "空" : "有")）")
-            }
-        } catch {
-            AppLog.shared.w("台账请求失败 \(sn)：\(error.localizedDescription)")
-        }
+        await store.deviceInfo(sn)
     }
 
     private func openDetail(_ sn: String) async {
-        if resolved[sn] == nil {
+        if store.deviceInfos[sn] == nil {
             await resolveDevice(sn)
         }
-        guard let info = resolved[sn] else {
+        guard let info = store.deviceInfos[sn] else {
             flow.toast = "查不到这台设备的信息（可能不是本校设备）"
             return
         }
@@ -514,7 +509,7 @@ struct MainScreenView: View {
         }
 
         let info: DeviceInfo
-        if let cached = resolved[sn] {
+        if let cached = store.deviceInfos[sn] {
             info = cached
         } else {
             do {
@@ -528,7 +523,7 @@ struct MainScreenView: View {
                     flow.toast = "获取设备信息失败"
                     return
                 }
-                resolved[sn] = d
+                await store.putDeviceInfo(d, sn: sn)
                 info = d
             } catch {
                 flow.toast = "获取设备信息失败：\(error.localizedDescription)"
@@ -551,7 +546,7 @@ struct MainScreenView: View {
     /// 扫码绑定：扫到 snCode 后查台账并直接打开详情
     private func bindBySn(_ sn: String) async {
         await resolveDevice(sn)
-        guard let info = resolved[sn] else {
+        guard let info = store.deviceInfos[sn] else {
             flow.toast = "未查到该设备（\(sn)）"
             return
         }

@@ -64,6 +64,18 @@ final class Session: ObservableObject {
         AppLog.shared.i("登录态已保存：projectId=\(projectId)")
     }
 
+    /// 换绑手机号后同步本地的 telephone。
+    ///
+    /// ⚠️ 必须写：认证参数 `telephone` / `telPhone` 是从这里取的，
+    /// 不更新的话后续所有请求还在用旧号（照搬 Android `PrefsHelper.telephone = newPhone`
+    /// + `NetworkModule.restoreFromPrefs()`）。
+    func updateTelephone(_ newPhone: String) {
+        guard !newPhone.isEmpty else { return }
+        telephone = newPhone
+        set("telephone", newPhone)
+        AppLog.shared.i("已更新本地手机号")
+    }
+
     func logout() {
         loginCode = ""
         userId = ""

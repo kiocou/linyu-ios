@@ -86,6 +86,8 @@ struct UserScreenView: View {
     @AppStorage("linyu.darkMode") private var isDark = false
 
     @State private var showSettings = false
+    /// 退出登录确认（对照 Android `MainActivity.showLogoutConfirm`）
+    @State private var showLogoutConfirm = false
     @State private var showLog = false
     @State private var editMode = false
 
@@ -120,6 +122,35 @@ struct UserScreenView: View {
         .onChange(of: showSettings) { v in settingsVisible = v }
         .sheet(isPresented: $showLog) {
             NavigationStack { LogView() }
+        }
+        .overlay {
+            if showLogoutConfirm {
+                // 逐条对照 Android `MainActivity.kt:256-283`：
+                //   canLogout = 没有进行中的订单（ShowerSafetyPolicy.canLogoutVoluntarily）
+                //   标题   能退出「确认退出」/ 不能退出「无法退出」
+                //   正文   能退出「确定退出登录？」/ 不能退出「设备使用中，无法退出」
+                //   确认键 能退出「退出」（error 色）/ 不能退出「返回」（primary 色）
+                //   取消键 只有能退出时才给「取消」
+                let canLogout = flow.activeOrder == nil
+                ConfirmDialogView(
+                    title: canLogout ? "确认退出" : "无法退出",
+                    message: canLogout ? "确定退出登录？" : "设备使用中，无法退出",
+                    confirmTitle: canLogout ? "退出" : "返回",
+                    destructive: canLogout,
+                    // 对照 Android：dismissButton 只有 canLogout 时才给
+                    cancelTitle: canLogout ? "取消" : nil,
+                    onConfirm: {
+                        showLogoutConfirm = false
+                        if canLogout {
+                            showSettings = false
+                            flow.reset()
+                            SavedCredential.clear()
+                            session.logout()
+                        }
+                    },
+                    onDismiss: { showLogoutConfirm = false }
+                )
+            }
         }
     }
 
@@ -168,12 +199,10 @@ struct UserScreenView: View {
                     moveToProfile(type)
                 }
 
-                // ⚠️ 对照 Android：退出登录**没有二次确认弹窗**，
-                // 就是一个描边按钮（danger 色、圆角 14、满宽），点了直接退。
+                // 对照 Android `UserScreen.kt:409`：点击只是把事件往上抛，
+                // 真正的确认弹窗在容器层（MainActivity）——iOS 这边同理放在本页 overlay
                 Button {
-                    showSettings = false
-                    flow.reset()
-                    session.logout()
+                    showLogoutConfirm = true
                 } label: {
                     Text("退出登录")
                         .font(.system(size: 15, weight: .medium))

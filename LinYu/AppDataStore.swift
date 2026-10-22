@@ -25,6 +25,15 @@ final class AppDataStore: ObservableObject {
     /// 账单真的为空时不能一直转圈，也不能拿空数组去算出一个假的余额。
     @Published private(set) var loaded = false
 
+    /// 台账（snCode → DeviceInfo）。
+    ///
+    /// ⚠️ 必须放这里：放到页面的 `@State` 里，切走再切回来页面重建就丢了，
+    /// 设备列表会先闪回广播名（`KLCXKJ-Water`）再变回房间名。
+    /// Android 那边这份数据在 MainViewModel 里，跨页面一直在。
+    @Published private(set) var deviceInfos: [String: DeviceInfo] = [:]
+    /// 正在查询的 snCode，避免同一台设备并发重复请求
+    private var resolving: Set<String> = []
+
     /// 进程内只自动加载一次；之后只有用户下拉刷新才会再请求
     private var didAutoLoad = false
 
@@ -32,6 +41,40 @@ final class AppDataStore: ObservableObject {
         guard !didAutoLoad else { return }
         didAutoLoad = true
         await reload()
+    }
+
+    /// 查台账。已经有结果就直接返回，不重复请求。
+    ///
+    /// ⚠️ 每台设备**每轮扫描只查一次**（对照 Android `addDevice` 的注释）：
+    /// 扫描回调对同一台设备每 ~200ms 就来一条，不收敛的话查不到的设备会被无限重查
+    /// （Android 实测日志里 13 秒对同一个 MAC 发了 35 次）。
+    /// 直接写入一份台账结果（扫码绑定等已经拿到 DeviceInfo 的场景）
+    func putDeviceInfo(_ info: DeviceInfo, sn: String) {
+        deviceInfos[sn] = info
+    }
+
+    func deviceInfo(_ sn: String) async {
+        guard !sn.isEmpty else { return }
+        if deviceInfos[sn] != nil { return }
+        if resolving.contains(sn) { return }
+        resolving.insert(sn)
+        defer { resolving.remove(sn) }
+
+        do {
+            let data = try await ApiClient.get(
+                "/device/info/mac",
+                query: ["macAddress": sn],
+                tag: "deviceInfo"
+            )
+            let resp = try ApiClient.decode(DeviceInfo.self, from: data, path: "deviceInfo")
+            if resp.success, let info = resp.data {
+                deviceInfos[sn] = info
+            } else {
+                AppLog.shared.w("台账查不到 \(sn)（success=true 但 data 为空）")
+            }
+        } catch {
+            AppLog.shared.w("台账请求失败 \(sn)：\(error.localizedDescription)")
+        }
     }
 
     /// 显式刷新（下拉 / 结算完成后刷新账单）

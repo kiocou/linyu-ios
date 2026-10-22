@@ -87,8 +87,11 @@ struct MainTabView: View {
                 .animation(.easeInOut(duration: 0.18), value: toast)
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: tab)
-        .animation(.easeInOut(duration: 0.22), value: flow.activeOrder != nil)
+        // ⚠️ 这里**不能**挂容器级 .animation：它会向下传播到所有子视图，
+        // 于是「消费趋势折叠」被套上渐隐、「我的 → 编辑」里卡片上下移动被套上
+        // 位移动画 —— 用户看到的就是「残影 / 平移」。
+        // 需要的动画各自在**自己的视图上**声明（导航栏滑块、Toast 已有）。
+        // 页面切换本身靠上面 Group 的 .transition(.opacity) 完成。
         .onChange(of: flow.toast) { value in
             guard let msg = value, !msg.isEmpty else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
