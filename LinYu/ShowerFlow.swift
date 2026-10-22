@@ -150,8 +150,8 @@ final class ShowerFlow: ObservableObject {
                 "macType": macType,
                 "bigTypeId": String(device.bigTypeId ?? 4),
                 "smallTypeId": String(device.smallTypeId ?? 1),
-                "protocolType": st.protocolType,
-                "randomNumber": st.randomNumber,
+                "protocolType": protocolType,
+                "randomNumber": randomNumber,
                 "xfModel": xfModel,
                 "signature": signature
             ], tag: "rateOrder")
@@ -256,15 +256,37 @@ final class ShowerFlow: ObservableObject {
         }
 
         // ③ 重新查状态 —— 必须用这里的 randomNumber / protocolType
-        guard let st = await ble.query() else {
-            stage = .failed("设备已关闭，但读取状态失败，下次连接会自动结清")
-            return
+        //
+        // ⚠️ 实测（2026-10-22，龙川北苑 320 洗手台）：关阀重连后**第一次 0x23 可能
+        // 完全无应答**（8 秒零字节），而同一条连接上 0x22 仍能立刻回 `81 01`——
+        // 说明链路是活的，只是设备刚关阀处于「待结算」过渡态时不响应状态查询。
+        // 所以重试几次，不要一次失败就放弃结算（那会让用户以为阀没关）。
+        var st: DeviceState?
+        for attempt in 1...3 {
+            st = await ble.query(timeout: 4)
+            if st != nil { break }
+            AppLog.shared.w("第 \(attempt) 次 0x23 无应答，600ms 后重试")
+            if attempt < 3 {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+            }
         }
-        AppLog.shared.i("关阀重连后状态：\(st.describe)")
+        // 兜底：randomNumber 只在 rateOrder 时更新，关阀不会改它。
+        // 所以 0x23 读不到时，用开阀时保存的值可能依然正确——总比直接失败好。
+        let protocolType: String
+        let randomNumber: String
+        if let s = st {
+            AppLog.shared.i("关阀重连后状态：\(s.describe)")
+            protocolType = s.protocolType
+            randomNumber = s.randomNumber
+        } else {
+            AppLog.shared.w("0x23 三次无应答，改用开阀时的 protocolType/randomNumber 兜底")
+            protocolType = order.protocolType
+            randomNumber = order.randomNumber
+        }
 
         // ④ 采集
         guard let payload = await ble.collect() else {
-            stage = .failed("采集消费数据失败，设备可能停在未结算状态（state=\(st.state)）")
+            stage = .failed("采集消费数据失败，设备可能停在未结算状态")
             return
         }
         guard payload.count >= 42, payload.first == 0x80 else {
@@ -289,8 +311,8 @@ final class ShowerFlow: ObservableObject {
         let uploadData: Data
         do {
             uploadData = try await ApiClient.post("/order/upload/bluetooth/data", form: [
-                "protocolType": st.protocolType,
-                "randomNumber": st.randomNumber,
+                "protocolType": protocolType,
+                "randomNumber": randomNumber,
                 "xfData": xfData,
                 "signature": sig
             ], tag: "upload")
