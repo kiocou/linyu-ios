@@ -92,6 +92,9 @@ final class Session: ObservableObject {
         // ⚠️ 被挤号时必须 `preserveActiveRecovery = true`：那时水可能还在流，
         // 订单和开阀时间戳要留着，重登之后才能从首页找到停止入口。
         Prefs.clear(preserveActiveRecovery: preserveActiveRecovery)
+        // 使用中/结束通知一起撤掉 —— 退出登录后还挂着「正在使用」会误导人
+        // （对照 Android：logout 里会 cancel 通知）
+        AppNotifications.shared.clear()
         if !preserveActiveRecovery {
             kickedReason = nil
             ActiveOrderStore.clear()
