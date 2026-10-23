@@ -38,7 +38,7 @@ struct MainTabView: View {
                     emoji: order.device.typeEmoji,
                     statusText: order.device.statusText,
                     location: order.device.displayName,
-                    remaining: preDeductText(order),
+                    remaining: flow.remainingText(order),
                     elapsedSec: order.elapsedSeconds,
                     autoDisConSec: order.autoDisConRemain,
                     isStopping: flow.isStopping,
@@ -223,8 +223,4 @@ struct MainTabView: View {
         }
     }
 
-    private func preDeductText(_ order: ActiveOrder) -> String {
-        guard let p = order.preDeductMoney, p > 0 else { return "0.00" }
-        return String(format: "%.2f", p)
-    }
 }

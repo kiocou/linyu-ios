@@ -108,8 +108,15 @@ final class ShowerFlow: ObservableObject {
     @Published private(set) var settlementRevision = 0
     /// 自动关停弹窗
     @Published var autoClose: AutoCloseNotice?
+    /// MQTT 推来的**实时消费**（元）。nil = 还没收到
+    ///
+    /// 对照 Android `handleMqttMessage`：只用来把界面上「剩余」的数字往下走，
+    /// **不参与结算**（结算永远问服务端要）。
+    @Published private(set) var liveConsumed: Double?
 
     let ble = BleSession()
+    /// MQTT 只是加速器：连不上就安静降级，绝不阻断开阀（Android 同）
+    private let mqtt = MqttClient()
 
     // MARK: - 内部
 
@@ -251,6 +258,13 @@ final class ShowerFlow: ObservableObject {
 
         AppLog.shared.i("=== 云端开阀 \(device.displayName)（sn=\(sn)）===")
 
+        // 云端表才走 MQTT：接收实时消费金额。
+        // ⚠️ 连不上不影响开阀，HTTP 才是正确性来源（Android 同）
+        liveConsumed = nil
+        await mqtt.connect(phone: Session.shared.telephone) { [weak self] payload in
+            self?.handleMqtt(payload)
+        }
+
         switch await CloudShower.open(snCode: sn) {
         case let .opened(orderNo, consumeDate, autoDisCon, pre):
             rememberDevice(device)
@@ -287,18 +301,23 @@ final class ShowerFlow: ObservableObject {
             toast = "已恢复进行中的订单"
 
         case .inUseByOthers:
+            mqtt.disconnect()
             errorMessage = "该设备正在被他人使用"
 
         case .deviceOffline:
             // 只有站在设备旁的人知道这台是不是蓝牙表 —— 必须问
+            // （这次的 MQTT 用不上了，改蓝牙后是设备直连）
+            mqtt.disconnect()
             bleConfirmDevice = device
 
         case let .rejected(msg):
             // 服务端明确拒绝：可能是欠费，弹窗里给「立即补扣」入口
+            mqtt.disconnect()
             errorKind = .serverRejected
             errorMessage = msg
 
         case let .failed(msg):
+            mqtt.disconnect()
             errorKind = .other
             errorMessage = msg
         }
@@ -522,6 +541,8 @@ final class ShowerFlow: ObservableObject {
     }
 
     private func closeCloud(_ order: ActiveOrder) async {
+        // 结束这一单就不再需要实时推送了（Android 也是在停止流程里 disconnect）
+        defer { mqtt.disconnect() }
         // ⚠️ orderNo 必须在关阀**之前**敲定：关阀成功后订单就没了，
         // `queryUsing` 再也问不出来，后面的结算只能退化成按时间窗猜账单。
         let resolved = await CloudShower.resolveOrderNo(snCode: order.snCode)
@@ -732,6 +753,50 @@ final class ShowerFlow: ObservableObject {
             deviceName: order.device.displayName
         )
         finishWithAmount(yuan, autoClosed: false, deviceName: order.device.displayName)
+    }
+
+    /// 处理 MQTT 推送 —— 逐条对照 Android `handleMqttMessage`。
+    ///
+    /// 两个用途：
+    /// 1. **补 orderNo**：开阀时服务端可能还没生成，推送里带的就是真的那一单
+    /// 2. **实时消费**：让界面上「剩余」的数字当场往下走，不用等关阀结算
+    ///
+    /// ⚠️ 只补「还没有 orderNo」的情况：已有值就信任已有值，
+    /// 否则同一单可能被反复改写（Android 那里也踩过 orderNo 被写成 snCode 的坑）。
+    private func handleMqtt(_ payload: String) {
+        guard let data = payload.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        if let orderNo = obj["orderNo"] as? String, !orderNo.isEmpty,
+           let order = activeOrder, order.orderNo.isEmpty {
+            activeOrder?.orderNo = orderNo
+            ActiveOrderStore.updateOrderNo(snCode: order.snCode, orderNo: orderNo)
+            AppLog.shared.i("MQTT 补到 orderNo=\(orderNo)")
+        }
+
+        // ⚠️ 金额字段有三套写法（数字/字符串都出现过），统一走 AnyNumber 那套宽松解析
+        if let raw = obj["consumeMoney"], let money = Self.anyNumber(raw) {
+            liveConsumed = money
+            AppLog.shared.i("MQTT 实时消费：¥\(MoneyFormat.format(money))")
+        }
+    }
+
+    private static func anyNumber(_ raw: Any) -> Double? {
+        if let d = raw as? Double { return d }
+        if let i = raw as? Int { return Double(i) }
+        if let n = raw as? NSNumber { return n.doubleValue }
+        if let s = raw as? String { return Double(s) }
+        return nil
+    }
+
+    /// 使用页上「剩余」那一行 —— 收到实时消费就按「预扣 − 已消费」显示
+    func remainingText(_ order: ActiveOrder) -> String {
+        let pre = order.preDeductMoney ?? 0
+        if let consumed = liveConsumed {
+            return String(format: "%.2f", max(0, pre - consumed))
+        }
+        return pre > 0 ? String(format: "%.2f", pre) : "0.00"
     }
 
     /// 结算完成：记金额、弹提示（或自动关停弹窗）
@@ -973,6 +1038,8 @@ final class ShowerFlow: ObservableObject {
     /// 退出登录 / 会话失效时清干净
     func reset() {
         ble.disconnect()
+        mqtt.disconnect()
+        liveConsumed = nil
         activeOrder = nil
         stopTimer()
         lastConsumeYuan = nil
