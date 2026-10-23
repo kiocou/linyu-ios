@@ -3,12 +3,13 @@
 淋浴 (LinYu) 的 iOS 客户端。Android 版在 [yehu-imei/linyu](https://github.com/yehu-imei/linyu)。
 
 > **当前状态：功能对齐阶段。**
-> 业务功能已按 Android 3.1.0 逐条移植（登录 / 扫描 / 云端与蓝牙开关阀 / 结算 /
-> 账单与代扣 / 使用码 / 挤号检测 / MQTT 实时消费 / 背景装扮 / 日志 / 更新检查）。
+> 已实现下列模块，仍需逐项验证与 Android 3.1.0 的行为一致性（登录 / 扫描 / 云端与蓝牙开关阀 / 结算 /
+> 账单与代扣 / 使用码 / 挤号检测 / MQTT 订单事件 / 背景装扮 / 日志 / 更新检查）。
 > 逐条对照见 [`docs/安卓对齐清单.md`](docs/安卓对齐清单.md)，那里同时列了
 > iOS 的系统能力边界（后台监控、常驻通知、小组件、应用内安装）。
 >
-> 剩余：WidgetKit 小组件（暂缓）+ 真机验收。
+> MQTT 消费数据仅在订单结束时推送，使用中没有实时扣费；以 Android《开发者指南》的明确限制为准。
+> 待完善：多设备操作目标和结算并发验证、界面行为对齐、WidgetKit 小组件（暂缓）及真机验收。
 
 ---
 
@@ -77,7 +78,7 @@ open LinYu.xcodeproj
 │   ├── ActiveOrderStore.swift   # 活跃订单持久化
 │   ├── PendingSettlement.swift  # 待对账 + 7 天复核
 │   ├── DeductService.swift      # 未支付账单 + 手动代扣
-│   ├── MqttClient.swift         # MQTT 实时消费（手写 3.1.1）
+│   ├── MqttClient.swift         # MQTT 订单事件（手写 3.1.1，无使用中实时扣费）
 │   ├── KickWatch.swift          # 挤号检测（25s 心跳）
 │   └── ...                      # 其余 UI / 工具（命名与 Android 文件对应）
 ├── Tests/                       # CI 里直接 swiftc 编译运行的回归检查

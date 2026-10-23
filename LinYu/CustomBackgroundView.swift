@@ -6,7 +6,7 @@ import CoreImage
 enum BackgroundScope: String, CaseIterable { case home, shower }
 
 struct BackgroundOptions: Codable {
-    var opacity = 0.7
+    var opacity = 1.0
     var blur = 0.0
     var brightness = 1.0
 }
@@ -185,7 +185,7 @@ struct AppBackground: View {
 /// └──────────────────────────┘
 /// [ 选择背景图片 / 更换背景图片 ]
 /// 主题色 ●  已根据图片自动提取
-/// 透明度 ————————○———  70%
+/// 透明度 ————————○———  100%
 /// 模糊度 ————————○———  0
 /// 亮度   ————————○———  100%
 /// [ 恢复默认背景（仅当前页面） ]
@@ -310,12 +310,15 @@ struct CustomBackgroundView: View {
             }
             // 安卓 `verticalScroll` 不显示滚动条
             .scrollIndicators(.hidden)
+            // 与 Android statusBarsPadding 后的滚动区域一致：
+            // 内容裁在安全区内，底色仍由上面的 ignoresSafeArea 铺到状态栏。
+            .clipped()
 
             // 恢复默认确认（对照 Android 的 Material3 AlertDialog）
             if resetConfirm {
                 DialogScrim(onTapOutside: { resetConfirm = false }) {
                     AlertCard(title: "恢复默认背景？", titleAlign: .leading) {
-                        Text("这将移除当前页面的自定义背景及相关效果。\n不会影响深色 / 浅色模式。")
+                        Text("这将移除当前页面的自定义背景")
                             .font(.system(size: 14))
                             .foregroundStyle(colors.textSecondary)
                             .lineSpacing(4)
@@ -336,7 +339,7 @@ struct CustomBackgroundView: View {
                 guard value.startLocation.x < 30,
                       value.translation.width > 80,
                       abs(value.translation.height) < 60 else { return }
-                onBack()
+                if resetConfirm { resetConfirm = false } else { onBack() }
             }
         )
         .onChange(of: selection) { item in

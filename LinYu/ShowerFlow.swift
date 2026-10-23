@@ -108,10 +108,10 @@ final class ShowerFlow: ObservableObject {
     @Published private(set) var settlementRevision = 0
     /// 自动关停弹窗
     @Published var autoClose: AutoCloseNotice?
-    /// MQTT 推来的**实时消费**（元）。nil = 还没收到
+    /// MQTT 推来的消费金额（元）。nil = 还没收到；使用中没有实时扣费推送。
     ///
-    /// 对照 Android `handleMqttMessage`：只用来把界面上「剩余」的数字往下走，
-    /// **不参与结算**（结算永远问服务端要）。
+    /// 对照 Android `handleMqttMessage` 保留展示更新，**不参与结算**。
+    /// 服务端仅在订单结束时推送消费数据，不能据此承诺使用中实时金额。
     @Published private(set) var liveConsumed: Double?
 
     let ble = BleSession()
@@ -269,7 +269,7 @@ final class ShowerFlow: ObservableObject {
 
         AppLog.shared.i("=== 云端开阀 \(device.displayName)（sn=\(sn)）===")
 
-        // 云端表才走 MQTT：接收实时消费金额。
+        // 云端表订阅 MQTT 订单事件；消费数据仅在订单结束时推送。
         // ⚠️ 连不上不影响开阀，HTTP 才是正确性来源（Android 同）
         liveConsumed = nil
         await mqtt.connect(phone: Session.shared.telephone) { [weak self] payload in
@@ -552,7 +552,7 @@ final class ShowerFlow: ObservableObject {
     }
 
     private func closeCloud(_ order: ActiveOrder) async {
-        // 结束这一单就不再需要实时推送了（Android 也是在停止流程里 disconnect）
+        // 对照 Android 停止流程断开 MQTT；最终金额以结算查询为准。
         defer { mqtt.disconnect() }
         // ⚠️ orderNo 必须在关阀**之前**敲定：关阀成功后订单就没了，
         // `queryUsing` 再也问不出来，后面的结算只能退化成按时间窗猜账单。
@@ -770,7 +770,7 @@ final class ShowerFlow: ObservableObject {
     ///
     /// 两个用途：
     /// 1. **补 orderNo**：开阀时服务端可能还没生成，推送里带的就是真的那一单
-    /// 2. **实时消费**：让界面上「剩余」的数字当场往下走，不用等关阀结算
+    /// 2. 消费金额到达时更新展示；按 Android 文档，订单结束前没有中间扣费推送。
     ///
     /// ⚠️ 只补「还没有 orderNo」的情况：已有值就信任已有值，
     /// 否则同一单可能被反复改写（Android 那里也踩过 orderNo 被写成 snCode 的坑）。
@@ -789,7 +789,7 @@ final class ShowerFlow: ObservableObject {
         // ⚠️ 金额字段有三套写法（数字/字符串都出现过），统一走 AnyNumber 那套宽松解析
         if let raw = obj["consumeMoney"], let money = Self.anyNumber(raw) {
             liveConsumed = money
-            AppLog.shared.i("MQTT 实时消费：¥\(MoneyFormat.format(money))")
+            AppLog.shared.i("MQTT 消费金额推送：¥\(MoneyFormat.format(money))")
         }
     }
 
@@ -801,7 +801,7 @@ final class ShowerFlow: ObservableObject {
         return nil
     }
 
-    /// 使用页上「剩余」那一行 —— 收到实时消费就按「预扣 − 已消费」显示
+    /// 保留 Android 的「预扣 − 已收到消费金额」展示公式；不代表有使用中推送。
     func remainingText(_ order: ActiveOrder) -> String {
         let pre = order.preDeductMoney ?? 0
         if let consumed = liveConsumed {
