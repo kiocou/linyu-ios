@@ -1361,7 +1361,9 @@ final class ShowerFlow: ObservableObject {
             deviceName: info.displayName,
             deviceMac: info.macAddress ?? snCode,
             deviceEmoji: info.typeEmoji,
-            preDeduct: info.withholdYuan ?? 0
+            preDeduct: info.withholdYuan ?? 0,
+            // 此入口已查到云端订单；仍尊重已知蓝牙标记，避免误用云端轮询。
+            isBluetooth: info.needsBluetoothControl || Prefs.isBleDevice(snCode)
         ))
         if Prefs.startedAt(snCode) <= 0 {
             Prefs.setStartedAt(snCode, Int64(Date().timeIntervalSince1970 * 1000))
