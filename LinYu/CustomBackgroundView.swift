@@ -193,8 +193,8 @@ struct CustomBackgroundView: View {
                                 .frame(width: 48, height: 48)
                         }
                         .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                         .accessibilityLabel("返回")
-                        .disabled(loading)
                         Text("自定义背景").font(.system(size: 20, weight: .bold))
                     }
                     .foregroundStyle(colors.textPrimary)
@@ -203,7 +203,6 @@ struct CustomBackgroundView: View {
                         scopeChip("主页", value: .home)
                         scopeChip("使用页", value: .shower)
                     }
-                    .disabled(loading)
                     .onChange(of: scope) { Prefs.backgroundScope = $0.rawValue }
                     Text(scope == .home ? "应用于：首页 / 账单 / 我的" : "应用于：洗澡中的使用页")
                         .font(.system(size: 12)).foregroundStyle(colors.textSecondary)
@@ -274,7 +273,10 @@ struct CustomBackgroundView: View {
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
                 .background(scope == value ? colors.accent : colors.card, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8))
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        // 明确的点击区：整块胶囊都可点（不只是文字那几像素）
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .accessibilityAddTraits(scope == value ? .isSelected : [])
     }
 

@@ -93,21 +93,6 @@ struct MainTabView: View {
                 }
             }
 
-            // 背景装扮 / 运行日志：整屏覆盖层。
-            //
-            // ⚠️ 必须是**整屏**、且挂在容器这一层（对照 Android：两者都是
-            // `Dialog(usePlatformDefaultWidth = false)` + `Surface(fillMaxSize)`）。
-            // 以前放在「我的」页内部，会被页面自身的布局/动画范围限制，
-            // 顶栏按钮点不到、背景也铺不满。
-            if let page = userPresentation.page {
-                switch page {
-                case .background:
-                    CustomBackgroundView(onBack: { userPresentation.page = nil })
-                case .log:
-                    LogView(onBack: { userPresentation.page = nil })
-                }
-            }
-
             // Toast：开阀/结算/扫描的提示都走这一条通道。
             //
             // ⚠️ 位置在**顶部**（对照 Android `LinYuToast` 的 Alignment.TopCenter
@@ -139,6 +124,22 @@ struct MainTabView: View {
         // 于是「消费趋势折叠」被套上渐隐、「我的 → 编辑」里卡片上下移动被套上
         // 位移动画 —— 用户看到的就是「残影 / 平移」。
         // 需要的动画各自在**自己的视图上**声明（导航栏滑块、Toast 已有）。
+        // 背景装扮 / 运行日志：**模态呈现**。
+        //
+        // ⚠️ 这里必须用 fullScreenCover，不能放在 ZStack 里当普通子视图。
+        // Android 这两个页面都是 `Dialog`（`CustomBackgroundScreen` 用
+        // `DialogProperties(usePlatformDefaultWidth = false)`），也就是说它们
+        // 跑在**独立的窗口**上，天然盖住导航栏、且不受底层任何 overlay 影响。
+        // 之前放在 ZStack 里，真机上按钮点不动、也关不掉 —— 模态呈现是
+        // 与 Android 一致的做法，同时彻底避开层级问题。
+        .fullScreenCover(item: $userPresentation.page) { page in
+            switch page {
+            case .background:
+                CustomBackgroundView(onBack: { userPresentation.page = nil })
+            case .log:
+                LogView(onBack: { userPresentation.page = nil })
+            }
+        }
         .overlay { flowDialogs }
         .overlay { UserDialogs(scanner: scanner) { flow.toast = "已绑定寝室：\($0)" } }
         .environmentObject(store)

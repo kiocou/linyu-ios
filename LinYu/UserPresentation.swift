@@ -3,7 +3,10 @@ import Combine
 
 @MainActor
 final class UserPresentation: ObservableObject {
-    enum Page { case background, log }
+    enum Page: String, Identifiable {
+        case background, log
+        var id: String { rawValue }
+    }
     enum Dialog { case phone, password, useCode, room }
     @Published var page: Page?
     @Published var dialog: Dialog?
