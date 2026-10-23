@@ -1,0 +1,194 @@
+import SwiftUI
+
+/// 三 Tab 容器 —— 对照 Android 的 `MainActivity`。
+///
+/// - 用水时**整屏**切成 `ShowerScreenView`，不显示底部导航（和 Android 一致）
+/// - Tab 切换是弹性左右滑移（Android 用 `AnimatedContent` + spring 420/0.78）
+/// - Toast 挂在这一层，因为开阀/结算的提示可能发生在任意 Tab
+struct MainTabView: View {
+    @Environment(\.appColors) private var colors
+    @Environment(\.isDarkMode) private var isDark
+
+    @State private var tab = 0
+    /// 会话状态在容器里持有：首页、用水页、我的页共用同一条 BLE 连接
+    @StateObject private var flow = ShowerFlow()
+    /// 账单/余额缓存（对照 Android 的 MainViewModel：跨页面存活，切换不重载）
+    @StateObject private var store = AppDataStore()
+    @StateObject private var userPresentation = UserPresentation()
+    /// 扫描器放在容器里：首页展示列表、「我的 → 绑定寝室」读附近设备，共用同一份结果
+    @StateObject private var scanner = BLEScanner()
+    @ObservedObject private var backgrounds = BackgroundStore.shared
+    /// 挤号检测（25 秒心跳 + 401/403 识别）—— 对照 Android `startKickWatch`
+    @StateObject private var kickWatch = KickWatch()
+    @Environment(\.scenePhase) private var scenePhase
+    /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
+    @State private var settingsVisible = false
+    @State private var showerMinimized = false
+    /// 从首页改完设置（寝室筛选等）要让首页刷新，用一个计数器触发
+    @State private var refreshToken = 0
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            AppBackground(scope: flow.activeOrder != nil && !showerMinimized ? .shower : .home)
+
+            if let order = flow.activeOrder, !showerMinimized {
+                ShowerScreenView(
+                    emoji: order.device.typeEmoji,
+                    statusText: order.device.statusText,
+                    location: order.device.displayName,
+                    remaining: preDeductText(order),
+                    elapsedSec: order.elapsedSeconds,
+                    autoDisConSec: order.autoDisConRemain,
+                    isStopping: flow.isStopping,
+                    onStop: { Task { await flow.close() } },
+                    onMinimize: minimizeShower
+                )
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 30).onEnded { value in
+                        guard value.startLocation.x < 24, value.translation.width > 80,
+                              abs(value.translation.height) < 50 else { return }
+                        minimizeShower()
+                    }
+                )
+                .transition(.identity)
+            } else {
+                Group {
+                    switch tab {
+                    case 0:
+                        MainScreenView(scanner: scanner, store: store, flow: flow,
+                                       onResumeOrder: { showerMinimized = false })
+                            .id(refreshToken)
+                    case 1:
+                        WalletScreenView(store: store, flow: flow)
+                    default:
+                        UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea(.container, edges: .bottom)
+                // 页面直接切换，不做交叉渐隐。
+                .transition(.identity)
+
+                if !settingsVisible {
+                    PillNavBar(currentTab: $tab, colors: colors)
+                        .padding(.bottom, 22)
+                        .padding(.horizontal, 24)
+                        .transition(.identity)
+                }
+            }
+
+            // Toast：开阀/结算/扫描的提示都走这一条通道。
+            //
+            // ⚠️ 位置在**顶部**（对照 Android `LinYuToast` 的 Alignment.TopCenter
+            // + padding(top = 60.dp)），从上方滑入。放底部会和悬浮导航栏打架，
+            // 也和安卓端不一致。
+            if let toast = flow.toast, !toast.isEmpty {
+                VStack {
+                    LinYuToast(message: toast, isDark: isDark)
+                        .padding(.top, 60)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .opacity
+                            )
+                        )
+                        .allowsHitTesting(false)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .animation(.easeInOut(duration: 0.18), value: toast)
+            }
+        }
+        // ⚠️ 这里**不能**挂容器级 .animation：它会向下传播到所有子视图，
+        // 于是「消费趋势折叠」被套上渐隐、「我的 → 编辑」里卡片上下移动被套上
+        // 位移动画 —— 用户看到的就是「残影 / 平移」。
+        // 需要的动画各自在**自己的视图上**声明（导航栏滑块、Toast 已有）。
+        .overlay { flowDialogs }
+        .overlay { UserDialogs(scanner: scanner) { flow.toast = "已绑定寝室：\($0)" } }
+        .environmentObject(store)
+        .environmentObject(userPresentation)
+        .environment(\.appColors, backgrounds.colors(colors, scope: flow.activeOrder != nil && !showerMinimized ? .shower : .home))
+        .task {
+            if Prefs.notifyEnabled { _ = await AppNotifications.shared.requestPermission() }
+        }
+        // 把「扫到的 peripheral / central / 设备台账」交给业务层：
+        // 首页「恢复订单」要重新走开阀流程，但 CoreBluetooth 只认 CBPeripheral，
+        // 业务层自己扫不了——得靠扫描器提供。
+        .task {
+            flow.peripheralProvider = { [scanner] sn in scanner.peripheral(forSn: sn) }
+            flow.centralProvider = { [scanner] in scanner.manager }
+            flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
+        }
+        // 启动时：补结算上一笔待对账
+        .task { await flow.reconcileSettlements() }
+        // 挤号检测：生命周期跟主界面走，回登录页就停
+        .task { kickWatch.start() }
+        .onDisappear { kickWatch.stop() }
+        // 回前台对齐用水状态（Android 的 `reconcileShowerOnResume`）
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            Task {
+                await flow.reconcileOnResume()
+                await flow.reconcileSettlements()
+                await store.reload()
+            }
+        }
+        .task { await store.loadProfileIfNeeded() }
+        .task { await store.loadUseCode() }
+        .onDisappear { store.cancelRequests() }
+        .onChange(of: flow.settlementRevision) { _ in Task { await store.reload() } }
+        .onChange(of: flow.activeOrder?.startedAt) { _ in
+            showerMinimized = false
+            settingsVisible = false
+            if flow.activeOrder == nil { tab = 0 }
+        }
+        .onChange(of: flow.toast) { value in
+            guard let msg = value, !msg.isEmpty else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                // 只在还是同一条消息时才清，避免把后来的新消息误关
+                if flow.toast == msg { flow.toast = nil }
+            }
+        }
+    }
+
+    private func minimizeShower() {
+        tab = 0
+        settingsVisible = false
+        showerMinimized = true
+        flow.toast = "已返回主页，设备仍在运行"
+    }
+
+    // 用水页返回后可以查看账单和设置，业务提示必须跨页面可见。
+    @ViewBuilder
+    private var flowDialogs: some View {
+        ZStack {
+            if flow.isStarting {
+                OpeningDialogView(progress: flow.openingText)
+            }
+            if let msg = flow.errorMessage {
+                ShowerErrorDialogView(message: msg) { flow.clearError() }
+            }
+            if let device = flow.bleConfirmDevice {
+                BleRetryDialogView(
+                    deviceName: device.displayName,
+                    onConfirm: { Task { await flow.confirmBleOpen() } },
+                    onDismiss: { flow.dismissBleConfirm() }
+                )
+            }
+            if let notice = flow.autoClose {
+                AutoCloseDialogView(
+                    deviceName: notice.deviceName,
+                    elapsedSeconds: notice.elapsedSeconds,
+                    consumed: notice.consumed,
+                    loading: notice.loading,
+                    onConfirm: { flow.dismissAutoClose() }
+                )
+            }
+        }
+    }
+
+    private func preDeductText(_ order: ActiveOrder) -> String {
+        guard let p = order.preDeductMoney, p > 0 else { return "0.00" }
+        return String(format: "%.2f", p)
+    }
+}

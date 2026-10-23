@@ -105,12 +105,29 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
     /// 里面绝大多数是耳机、手环、共享设备，那样筛等于没筛。
     ///
     /// 这个判定**只用于默认筛选**，界面上永远可以切到「全部」。
+    /// 是不是热水器——**直接对照 Android `BluetoothScanner.onScanResult`**。
+    ///
+    /// Android 的判据就一行：
+    /// ```kotlin
+    /// val deviceName = device.name ?: return
+    /// if (deviceName.contains("KLCXKJ-Water", ignoreCase = true)) { ... }
+    /// ```
+    /// 也就是说 **名字不含 `KLCXKJ-Water` 的一律不收**，扫描结果里根本不会出现
+    /// 打印机（Paperang）、耳机、手环这些东西。
+    ///
+    /// 只加一条 iOS 特有的补偿：iOS 的 `CBPeripheral.name` 读的是系统缓存，
+    /// 缓存没命中就是 `nil`（Android 的 `device.name` 更可靠）。这时退一步，
+    /// 用「广播 UUID 含 FEE7 **且**能解析出 8B/0000 开头的 snCode」兜住，
+    /// 免得整台设备凭空消失。**兜底也要求两条同时成立**，不能只看一条，
+    /// 否则又会把带 manufacturerData 的杂设备放进来。
     var looksLikeWaterMeter: Bool {
-        if hasKlcxkjService { return true }
-        if parsedSnCode != nil { return true }
-        let n = name.lowercased()
-        let keywords = ["klcxkj", "klcx", "water", "shower", "热水", "水表", "淋浴", "水控"]
-        return keywords.contains(where: { n.contains($0) })
+        if name.localizedCaseInsensitiveContains("KLCXKJ-Water") { return true }
+        return hasKlcxkjService && parsedSnCode != nil
+    }
+
+    /// 命中了热水器的**名字**（用于 UI 上标「certain」）
+    var hasWaterMeterName: Bool {
+        name.localizedCaseInsensitiveContains("KLCXKJ-Water")
     }
 
     /// 识别可信度，用于界面上区分"确定"和"可能"
@@ -152,6 +169,7 @@ final class BLEScanner: NSObject, ObservableObject {
     private var peripherals: [UUID: CBPeripheral] = [:]
     /// 是否已经自动开过一次扫描——避免用户手动停止后，蓝牙状态变化又把它拉起来
     private var didAutoStart = false
+    private var scanTimer: Timer?
 
     // MARK: - 连接与服务检查（只读，不发任何命令）
 
@@ -187,7 +205,10 @@ final class BLEScanner: NSObject, ObservableObject {
     @MainActor
     @discardableResult
     func queryState() async -> [UInt8]? {
-        guard let peripheral, writeCharacteristic != nil else {
+        guard let id = connectedId,
+              let target = peripherals[id],
+              writeCharacteristic != nil
+        else {
             queryResult = "还没有连接设备，或没找到 FF02 写入特征"
             return nil
         }
@@ -202,7 +223,7 @@ final class BLEScanner: NSObject, ObservableObject {
         let wire = BleFrame.cmdToWire(cmd: 0x23, data: [0])
         gattLog.append("→ 发送 0x23：\(BleFrame.toHex(wire))")
 
-        guard await writeChunks(wire, to: peripheral) else {
+        guard await writeChunks(wire, to: target) else {
             queryResult = "❌ 写入失败（分片未被接受或超时）"
             return nil
         }
@@ -372,11 +393,48 @@ final class BLEScanner: NSObject, ObservableObject {
     /// 某台设备是否正在连接/已连接
     func isConnected(_ id: UUID) -> Bool { connectedId == id }
 
+    /// 业务会话（连接/收发由它处理）。
+    ///
+    /// ⚠️ 为什么要有这个：iOS 的 `CBPeripheral` 对象**绑定于创建它的 CBCentralManager**。
+    /// 两个类各建一个 central 时，用 B 的 central 去 connect A 扫描到的 peripheral
+    /// 会报 "One or more parameters were invalid."（实测踩过）。
+    /// 所以全 App 只保留一个 central（本类的），由本类做 CBCentralManagerDelegate，
+    /// 再把 peripheral 级回调转发给业务会话。
+    weak var activeSession: BleSession?
+
+    /// 供业务层连接时复用的 central
+    var manager: CBCentralManager? { central }
+
+    /// 取扫描时缓存的 `CBPeripheral`。
+    ///
+    /// ⚠️ iOS **不能**像 Android 那样用 MAC 直接 `getRemoteDevice()`，
+    /// 唯一可行的连接方式是拿扫描到的这个对象去 `connect`。
+    func peripheral(for id: UUID) -> CBPeripheral? {
+        peripherals[id]
+    }
+
+    /// 按 snCode 取扫描时缓存的 `CBPeripheral`。
+    ///
+    /// 「上次使用设备」和「扫码绑定」都只有 snCode，但要连蓝牙就必须拿到这个对象
+    /// （iOS 不能像 Android 那样 `getRemoteDevice(mac)` 新建一个）。
+    func peripheral(forSn sn: String) -> CBPeripheral? {
+        guard !sn.isEmpty else { return nil }
+        guard let d = devices.first(where: { $0.parsedSnCode == sn }) else { return nil }
+        return peripherals[d.id]
+    }
+
     override init() {
         super.init()
         // 构造时就建 manager，系统会在需要时弹蓝牙权限
         central = CBCentralManager(delegate: self, queue: .main)
     }
+
+    /// 一次扫描的时长（秒）。
+    ///
+    /// 对照 Android 的 `startScan(timeoutMillis = 5_000)`：热水器广播间隔很短，
+    /// **5 秒足够扫全**，再久只是让用户干等、还更费电。
+    /// 之前 iOS 这边没有超时，会一直扫下去——列表不停变动，用户永远等不到「扫完了」。
+    static let scanDuration: TimeInterval = 5
 
     func start() {
         devices.removeAll()
@@ -386,12 +444,15 @@ final class BLEScanner: NSObject, ObservableObject {
         guard let central else { return }
         if central.state == .poweredOn {
             beginScan(central)
+            scheduleAutoStop()
         } else {
             stateText = "等待蓝牙就绪（当前：\(describe(central.state))）"
         }
     }
 
     func stop() {
+        scanTimer?.invalidate()
+        scanTimer = nil
         guard let central, central.state == .poweredOn else {
             isScanning = false
             return
@@ -399,6 +460,34 @@ final class BLEScanner: NSObject, ObservableObject {
         central.stopScan()
         isScanning = false
         stateText = "已停止（本次扫到 \(devices.count) 台）"
+    }
+
+    /// 5 秒后自动停，并排一次序
+    private func scheduleAutoStop() {
+        scanTimer?.invalidate()
+        scanTimer = Timer.scheduledTimer(withTimeInterval: Self.scanDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.finishScan() }
+        }
+    }
+
+    /// 扫描结束。
+    ///
+    /// ⚠️ 排序只在**结束后做一次**，不能实时排：扫描过程中 RSSI 一直小幅波动，
+    /// 实时重排会让列表不停跳动，用户正要点的那台被挪走 → 点错设备。
+    /// 在澡堂里点错意味着替别人付了水费（Android 注释里专门写了这条）。
+    private func finishScan() {
+        scanTimer?.invalidate()
+        scanTimer = nil
+        guard isScanning else { return }
+
+        if let central, central.state == .poweredOn {
+            central.stopScan()
+        }
+        isScanning = false
+        // 按 RSSI 降序：排最前面的就是离手机最近的那台，通常正是用户面前这个位置
+        devices = devices.sorted { $0.rssi > $1.rssi }
+        stateText = devices.isEmpty ? "扫描完成，未发现设备" : "扫描完成（\(devices.count) 台）"
+        AppLog.shared.i("BLE 扫描完成：\(devices.count) 台（已按信号强度排序）")
     }
 
     // MARK: - 私有
@@ -437,12 +526,17 @@ extension BLEScanner: CBCentralManagerDelegate {
         if central.state == .poweredOn && !didAutoStart {
             didAutoStart = true
             beginScan(central)
+            scheduleAutoStop()
         }
     }
 
     // MARK: 连接回调（只发现服务，不发命令）
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if let s = activeSession {
+            Task { @MainActor in s.handleDidConnect(peripheral) }
+            return
+        }
         gattSummary = "已连接，正在发现服务…"
         peripheral.discoverServices(nil)
     }
@@ -452,6 +546,10 @@ extension BLEScanner: CBCentralManagerDelegate {
         didFailToConnect peripheral: CBPeripheral,
         error: Error?
     ) {
+        if let s = activeSession {
+            Task { @MainActor in s.handleDidFailToConnect(error) }
+            return
+        }
         gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
         connectedId = nil
     }
@@ -461,6 +559,10 @@ extension BLEScanner: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        if let s = activeSession {
+            Task { @MainActor in s.handleDidDisconnect(error) }
+            return
+        }
         if connectedId != nil {
             gattSummary = "已断开\(error.map { "（\($0.localizedDescription)）" } ?? "")"
         }

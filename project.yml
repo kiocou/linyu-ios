@@ -24,20 +24,28 @@ targets:
       - path: LinYu
         excludes:
           - Info.plist
+      # ⚠️ 图片资源**直接放在 LinYu 下**，不要再单独声明一个
+      # `LinYu/Resources` 的 source —— 它和外层 `LinYu` 的扫描范围重叠，
+      # XcodeGen 生成出来的工程会丢掉 PRODUCT_BUNDLE_IDENTIFIER，
+      # archive 时直接报 "Missing Bundle Identifier"。
+      # XcodeGen 会自动把 source 路径里的图片当资源加进 bundle。
     info:
       path: LinYu/Info.plist
       properties:
         CFBundleDisplayName: 淋浴
-        CFBundleShortVersionString: "0.5.0"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "3.1.0"
+        CFBundleVersion: "17"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # 后续做 BLE 时必须声明，先放上避免忘记
         NSBluetoothAlwaysUsageDescription: 用于搜索并连接校园热水器，控制开阀与关阀
         NSBluetoothPeripheralUsageDescription: 用于连接校园热水器
+        # 扫码绑定设备要用相机（对照 Android 的 QrScanActivity）
+        NSCameraUsageDescription: 用于扫描设备二维码以绑定设备
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hualala.linyu
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
