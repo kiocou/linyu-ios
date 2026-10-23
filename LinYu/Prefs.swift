@@ -218,6 +218,13 @@ enum Prefs {
         set { d.set(newValue, forKey: "bleSessionJson") }
     }
 
+    /// 背景装扮页上次查看的作用域（home / shower）—— 对照 Android `PrefsHelper.backgroundScope`。
+    /// 这不是账号数据，退出登录不清。
+    static var backgroundScope: String {
+        get { d.string(forKey: "backgroundScope") ?? "home" }
+        set { d.set(newValue, forKey: "backgroundScope") }
+    }
+
     // MARK: - 通知按钮触发的待处理动作
     //
     // iOS 的通知按钮回调**不能**直接发关阀请求：后台既连不上蓝牙也不保证网络。

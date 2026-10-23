@@ -22,6 +22,13 @@ struct DialogScrim<Content: View>: View {
             content
                 .padding(.horizontal, 28)
         }
+        // ⚠️ 关键：容器本身也要铺满整个窗口。
+        // 只给里面的 Color 加 ignoresSafeArea 不够 —— ZStack 仍会被父视图
+        // 按安全区布局，遮罩就只在中间一块（真机反馈：四周露出没压暗的区域）。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        // 不允许点外部关闭的弹窗也必须拦住底层点击
+        .contentShape(Rectangle())
     }
 }
 

@@ -169,6 +169,8 @@ final class ShowerFlow: ObservableObject {
         restoredOrders = ActiveOrderStore.all()
         // 使用中通知：同一 identifier 重复 add 只会替换，不会刷屏
         AppNotifications.shared.inUse(device: order.device.displayName)
+        // 立刻给这一单起监控（Android 在 enterShowerState 里启动 ShowerWatchService）
+        startOrderWatch()
     }
 
     /// 清掉这台设备的本地使用状态
@@ -1020,6 +1022,131 @@ final class ShowerFlow: ObservableObject {
         await open(device: info, peripheral: nil, central: nil)
     }
 
+    // MARK: - 订单监控（对照 Android ShowerWatchService.watch）
+
+    private var watchTasks: [String: Task<Void, Never>] = [:]
+
+    /// 给每条活跃订单起一个监控任务。
+    ///
+    /// ## 它解决什么问题
+    ///
+    /// 订单可能**不是在这个 App 里结束**的：设备到点自己关了、服务端超时关了、
+    /// 用户在通知栏点了结束、甚至在官方 App 里停了。Android 靠前台服务每 15 秒查一次，
+    /// 查到就收尾并发通知。iOS 没有前台服务，就用前台任务做同一件事 ——
+    /// 少了它，首页那张「使用中的设备」会一直挂着（真机反馈过）。
+    ///
+    /// ⚠️ 只在前台有效：App 被挂起后任务会被系统冻结。这是系统能力边界，
+    /// 回到前台时由 `reconcileOnResume` 补一次。
+    func startOrderWatch() {
+        for record in ActiveOrderStore.all() where watchTasks[record.snCode] == nil {
+            let sn = record.snCode
+            AppLog.shared.i("订单监控开始：\(sn)")
+            watchTasks[sn] = Task { [weak self] in
+                await self?.watch(sn)
+            }
+        }
+        // 订单已经结束的，任务自己会退出，这里顺手回收
+        for (sn, task) in watchTasks where !ActiveOrderStore.isRunning(sn) {
+            task.cancel()
+            watchTasks[sn] = nil
+        }
+    }
+
+    func stopOrderWatch() {
+        for (_, task) in watchTasks { task.cancel() }
+        watchTasks.removeAll()
+    }
+
+    /// 单台设备的监控循环 —— 逐条对照 `ShowerWatchService.watch`
+    private func watch(_ snCode: String) async {
+        // 无论从哪条路退出，都要把登记表里的自己摘掉 ——
+        // 否则同一台设备下次开阀时会被「已经有任务」挡住，再也不会被监控
+        defer { watchTasks[snCode] = nil }
+        while !Task.isCancelled {
+            // 快关停了就精确等到那一刻，否则 15 秒一轮（Android 同）
+            let remain = Prefs.autoDisconRemain(snCode)
+            let seconds: UInt64 = (remain >= 1 && remain <= 14) ? UInt64(remain) : 15
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            if Task.isCancelled { return }
+            guard Session.shared.isLoggedIn else { return }
+            // 别处已经清掉了（用户主动关阀）→ 监控结束
+            guard ActiveOrderStore.isRunning(snCode) else { return }
+            // 蓝牙表**不能**用云端订单判断：它没有 4G，server 的 tcpDevice 通道里
+            // 根本没有它的订单，queryUsing 永远 data=null → 会被误判成「订单没了」
+            // 而触发自动结算（水其实还在流）。它的结束只来自用户主动停止。
+            guard !Prefs.isBleDevice(snCode) else { continue }
+
+            switch await CloudShower.orderRunning(snCode: snCode) {
+            case .some(true):
+                continue
+            case .some(false):
+                await finishExternally(snCode)
+                return
+            case .none:
+                continue      // 请求失败 = 不确定，下轮再说（绝不臆断成已结束）
+            }
+        }
+    }
+
+    /// 检测到用水在别处结束：清本地状态 → 通知 → 补结算
+    private func finishExternally(_ snCode: String) async {
+        guard let record = ActiveOrderStore.find(snCode) else { return }
+        let startedAt = Prefs.startedAt(snCode)
+        let elapsed = startedAt > 0
+            ? Int((Int64(Date().timeIntervalSince1970 * 1000) - startedAt) / 1000)
+            : 0
+        let deviceName = record.deviceName.isEmpty ? "热水器" : record.deviceName
+        AppLog.shared.i("订单监控：\(snCode) 在别处结束（用时 \(elapsed)s）")
+
+        let wasDisplayed = activeOrder?.snCode == snCode
+
+        // ⚠️ 先清本地状态：首页「使用中的设备」要立刻消失，
+        //    金额晚一点到没关系（Android 也是这个顺序，注释里专门写过）
+        markFinished(snCode)
+        // ⚠️ 不能 cancel 自己：这个函数就跑在监控任务里，
+        // 取消会连带把后面的结算请求一起掐掉
+        watchTasks[snCode] = nil
+
+        if wasDisplayed {
+            activeOrder = nil
+            stopTimer()
+        }
+
+        // 「结算中」先挂上，拿到金额后原地更新（对照 Notifier.showSettling → 更新）
+        AppNotifications.shared.finished(
+            device: deviceName, elapsed: elapsed, amount: nil, automatic: true
+        )
+
+        let money = await SettlementEngine.settleAmount(
+            orderNo: record.orderNo,
+            startTimeMs: startedAt,
+            snCode: snCode,
+            deviceName: deviceName
+        )
+
+        AppNotifications.shared.finished(
+            device: deviceName, elapsed: elapsed, amount: money, automatic: true
+        )
+        if let money, money > 0 {
+            Prefs.recordConsume(snCode, amount: money)
+            Prefs.lastConsumeYuan = money
+        }
+        settlementRevision += 1
+
+        // 界面在使用页上就弹自动关停确认框（Android `onShowerFinishedFromService`）
+        if wasDisplayed {
+            autoClose = AutoCloseNotice(
+                deviceName: deviceName,
+                elapsedSeconds: elapsed,
+                consumed: money,
+                loading: false
+            )
+        } else {
+            toast = money.map { $0 > 0 ? "\(deviceName) 已自动关停，本次消费 \(MoneyFormat.withSymbol($0))" : "\(deviceName) 已自动关停，本次无消费" }
+                ?? "\(deviceName) 已自动关停，消费金额稍后可在账单中查看"
+        }
+    }
+
     // MARK: - 设备占用状态
 
     /// 每台设备的「订单是不是自己的」。`false` = 他人使用中。
@@ -1112,6 +1239,7 @@ final class ShowerFlow: ObservableObject {
         openingText = ""
         currentPeripheral = nil
         currentCentral = nil
+        stopOrderWatch()
         restoredOrders = ActiveOrderStore.all()
     }
 }

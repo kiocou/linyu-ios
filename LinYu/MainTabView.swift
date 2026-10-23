@@ -75,9 +75,6 @@ struct MainTabView: View {
                     .transition(pageTransition)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(.container, edges: .bottom)
-                // 整屏左右滑移时不要画到外面去（否则能看到邻页边缘）
-                .clipped()
 
                 if !settingsVisible {
                     // 拦截选中动作：先定方向再带弹簧动画改 tab，
@@ -93,6 +90,21 @@ struct MainTabView: View {
                         .padding(.bottom, 22)
                         .padding(.horizontal, 24)
                         .transition(.identity)
+                }
+            }
+
+            // 背景装扮 / 运行日志：整屏覆盖层。
+            //
+            // ⚠️ 必须是**整屏**、且挂在容器这一层（对照 Android：两者都是
+            // `Dialog(usePlatformDefaultWidth = false)` + `Surface(fillMaxSize)`）。
+            // 以前放在「我的」页内部，会被页面自身的布局/动画范围限制，
+            // 顶栏按钮点不到、背景也铺不满。
+            if let page = userPresentation.page {
+                switch page {
+                case .background:
+                    CustomBackgroundView(onBack: { userPresentation.page = nil })
+                case .log:
+                    LogView(onBack: { userPresentation.page = nil })
                 }
             }
 
@@ -115,9 +127,14 @@ struct MainTabView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // 这一层铺满全屏，但**不能拦点击**：它只是 Toast 的容器
+                .allowsHitTesting(false)
                 .animation(.easeInOut(duration: 0.18), value: toast)
             }
         }
+        // 铺到屏幕最下沿：Android 是 edge-to-edge + 各页面只加 statusBarsPadding，
+        // 底部一律不留白。放在这一层，页面内部就不会各自算一遍安全区。
+        .ignoresSafeArea(.container, edges: .bottom)
         // ⚠️ 这里**不能**挂容器级 .animation：它会向下传播到所有子视图，
         // 于是「消费趋势折叠」被套上渐隐、「我的 → 编辑」里卡片上下移动被套上
         // 位移动画 —— 用户看到的就是「残影 / 平移」。
@@ -126,7 +143,7 @@ struct MainTabView: View {
         .overlay { UserDialogs(scanner: scanner) { flow.toast = "已绑定寝室：\($0)" } }
         .environmentObject(store)
         .environmentObject(userPresentation)
-        .environment(\.appColors, backgrounds.colors(colors, scope: flow.activeOrder != nil && !showerMinimized ? .shower : .home))
+        .environment(\.appColors, backgrounds.colors(colors))
         .task {
             if Prefs.notifyEnabled { _ = await AppNotifications.shared.requestPermission() }
         }
@@ -140,6 +157,8 @@ struct MainTabView: View {
         }
         // 启动时：补结算上一笔待对账 + 拉一次未支付账单（开阀失败弹窗要用）
         .task { await flow.reconcileSettlements() }
+        // 订单监控：15 秒一轮查「还在不在用」，结束就收尾（对照 ShowerWatchService）
+        .task { flow.startOrderWatch() }
         .task { await deduct.load() }
         .task { deduct.onBillsChanged = { Task { await store.reload() } } }
         // 挤号检测：生命周期跟主界面走，回登录页就停
@@ -147,6 +166,7 @@ struct MainTabView: View {
         .onDisappear { kickWatch.stop() }
         // 回前台对齐用水状态（Android 的 `reconcileShowerOnResume`）
         .onChange(of: scenePhase) { phase in
+            if phase != .active { flow.stopOrderWatch() }
             guard phase == .active else { return }
             // 通知上的「结束用水」/「回到使用页」在这里落地
             // （回调里只记标记，不能在后台直接发请求）
@@ -160,6 +180,7 @@ struct MainTabView: View {
                 await flow.reconcileOnResume()
                 await flow.reconcileSettlements()
                 await store.reload()
+                flow.startOrderWatch()
                 if stopRequested, flow.activeOrder != nil {
                     showerMinimized = false
                     await flow.close()
@@ -170,6 +191,8 @@ struct MainTabView: View {
         .task { await store.loadUseCode() }
         .onDisappear { store.cancelRequests() }
         .onChange(of: flow.settlementRevision) { _ in Task { await store.reload() } }
+        // 订单变化（新开阀 / 被清掉）时同步监控任务
+        .onChange(of: flow.restoredOrders) { _ in flow.startOrderWatch() }
         .onChange(of: flow.activeOrder?.startedAt) { _ in
             showerMinimized = false
             settingsVisible = false

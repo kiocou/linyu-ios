@@ -20,7 +20,7 @@ final class BackgroundStore: ObservableObject {
     private init() {
         for scope in BackgroundScope.allCases {
             images[scope] = UIImage(contentsOfFile: Self.url(scope).path)
-            if let image = images[scope] { accents[scope] = Self.averageColor(image) }
+            if let image = images[scope] { accents[scope] = Self.extractThemeColor(image) }
             if let data = UserDefaults.standard.data(forKey: "background.\(scope.rawValue)"),
                let value = try? JSONDecoder().decode(BackgroundOptions.self, from: data) { options[scope] = value }
         }
@@ -31,23 +31,96 @@ final class BackgroundStore: ObservableObject {
     }
     func image(_ scope: BackgroundScope) -> UIImage? { images[scope] }
     func themeColor(_ scope: BackgroundScope) -> Color? { accents[scope].map { Color(uiColor: $0) } }
-    func colors(_ base: AppColorSet, scope: BackgroundScope) -> AppColorSet {
-        guard let color = accents[scope] else { return base }
-        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
-        color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+    /// 强调色覆盖 —— 对照 Android `LinYuThemeSpecific`：
+    ///
+    /// ```
+    /// val bgTheme = BackgroundState.config(SCOPE_HOME).themeColor
+    /// val set = if (bgTheme != null) base.copy(Accent = Color(bgTheme)) else base
+    /// ```
+    ///
+    /// ⚠️ 两个细节别改：
+    /// - 只认 **home** 作用域（使用页的背景色不影响全局强调色）
+    /// - 提取出来是什么色就**原样**用，不再二次调饱和度/亮度（那是另一套颜色了）
+    func colors(_ base: AppColorSet) -> AppColorSet {
+        guard let color = accents[.home] else { return base }
         var result = base
-        result.accent = Color(uiColor: UIColor(hue: hue, saturation: max(0.45, saturation), brightness: base.isDark ? 0.9 : 0.65, alpha: 1))
+        result.accent = Color(uiColor: color)
         return result
     }
-    private static func averageColor(_ image: UIImage) -> UIColor? {
-        guard let input = CIImage(image: image), let filter = CIFilter(name: "CIAreaAverage") else { return nil }
-        filter.setValue(input, forKey: kCIInputImageKey)
-        filter.setValue(CIVector(cgRect: input.extent), forKey: kCIInputExtentKey)
-        guard let output = filter.outputImage else { return nil }
-        var pixel = [UInt8](repeating: 0, count: 4)
-        CIContext().render(output, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
-        return UIColor(red: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
+    /// 从背景图提取「UI 可用的主题色」—— 逐行对照 Android `BackgroundManager.extractThemeColor`。
+    ///
+    /// 做法：
+    /// 1. 缩到 **48×48**
+    /// 2. 每个通道按 **32 一档**量化后统计出现次数（相当于简易调色板）
+    /// 3. 过滤掉过暗(V≤0.20)、过亮(V≥0.95)、过灰(S≤0.15)的颜色
+    /// 4. 取**占比最高**的那一档
+    /// 5. 把饱和度夹到 0.35~0.75、亮度夹到 0.45~0.85
+    ///
+    /// ⚠️ 以前这里用 `CIAreaAverage` 取平均色 —— 那是**所有像素的平均**，
+    /// 结果几乎总是灰白/土色，跟图上看着最显眼的颜色对不上，
+    /// 所以界面上显示的主题色和用户预期的完全不是一回事。
+    private static func extractThemeColor(_ image: UIImage) -> UIColor? {
+        guard let cg = image.cgImage else { return nil }
+
+        let side = 48
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                data: &pixels,
+                width: side, height: side,
+                bitsPerComponent: 8,
+                bytesPerRow: side * 4,
+                space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              )
+        else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+
+        // ① 量化统计
+        var counts: [Int: Int] = [:]
+        counts.reserveCapacity(256)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = (Int(pixels[i]) / 32) * 32
+            let g = (Int(pixels[i + 1]) / 32) * 32
+            let b = (Int(pixels[i + 2]) / 32) * 32
+            let key = (r << 16) | (g << 8) | b
+            counts[key, default: 0] += 1
+        }
+
+        // ② 过滤 + 取占比最高
+        var best: (key: Int, count: Int)?
+        for (key, count) in counts {
+            let color = UIColor(
+                red: CGFloat((key >> 16) & 0xFF) / 255.0,
+                green: CGFloat((key >> 8) & 0xFF) / 255.0,
+                blue: CGFloat(key & 0xFF) / 255.0,
+                alpha: 1
+            )
+            var h: CGFloat = 0, sat: CGFloat = 0, val: CGFloat = 0, a: CGFloat = 0
+            color.getHue(&h, saturation: &sat, brightness: &val, alpha: &a)
+            guard sat > 0.15, val > 0.20, val < 0.95 else { continue }
+            if best == nil || count > best!.count { best = (key, count) }
+        }
+        guard let picked = best?.key else { return nil }
+
+        // ③ 夹到「适合 UI」的饱和度 / 亮度
+        var h: CGFloat = 0, sat: CGFloat = 0, val: CGFloat = 0, a: CGFloat = 0
+        UIColor(
+            red: CGFloat((picked >> 16) & 0xFF) / 255.0,
+            green: CGFloat((picked >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(picked & 0xFF) / 255.0,
+            alpha: 1
+        ).getHue(&h, saturation: &sat, brightness: &val, alpha: &a)
+
+        return UIColor(
+            hue: h,
+            saturation: min(max(sat, 0.35), 0.75),
+            brightness: min(max(val, 0.45), 0.85),
+            alpha: 1
+        )
     }
+
     func settings(_ scope: BackgroundScope) -> BackgroundOptions { options[scope] ?? BackgroundOptions() }
     func update(_ scope: BackgroundScope, _ value: BackgroundOptions) {
         options[scope] = value
@@ -65,8 +138,11 @@ final class BackgroundStore: ObservableObject {
         let url = Self.url(scope)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try jpeg.write(to: url, options: .atomic)
-        accents[scope] = Self.averageColor(resized)
+        accents[scope] = Self.extractThemeColor(resized)
         images[scope] = resized
+        // 换图后把三个效果参数复位成默认值。
+        // 对照 Android：否则会沿用上一张图调过的参数，新图看着「莫名其妙变暗/变糊」。
+        update(scope, BackgroundOptions())
     }
     func reset(_ scope: BackgroundScope) throws {
         let url = Self.url(scope)
@@ -101,7 +177,8 @@ struct CustomBackgroundView: View {
     let onBack: () -> Void
     @Environment(\.appColors) private var colors
     @ObservedObject private var backgrounds = BackgroundStore.shared
-    @State private var scope: BackgroundScope = .home
+    /// 上次看的是哪一套（主页 / 使用页）—— 对照 Android：退出重进不再复位到「主页」
+    @State private var scope: BackgroundScope = BackgroundScope(rawValue: Prefs.backgroundScope) ?? .home
     @State private var selection: PhotosPickerItem?
     @State private var loading = false
     @State private var resetConfirm = false
@@ -127,6 +204,7 @@ struct CustomBackgroundView: View {
                         scopeChip("使用页", value: .shower)
                     }
                     .disabled(loading)
+                    .onChange(of: scope) { Prefs.backgroundScope = $0.rawValue }
                     Text(scope == .home ? "应用于：首页 / 账单 / 我的" : "应用于：洗澡中的使用页")
                         .font(.system(size: 12)).foregroundStyle(colors.textSecondary)
                         .padding(.top, 6).padding(.bottom, 14)

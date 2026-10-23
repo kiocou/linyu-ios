@@ -43,8 +43,12 @@ struct ShowerScreenView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            backgroundGradient.ignoresSafeArea()
-            if backgrounds.image(.shower) != nil { AppBackground(scope: .shower) }
+            // 对照 Android `ShowerScreen`：使用页套了自定义背景就**不画自身渐变**，
+            // 让底层（容器那层 AppBackground，scope = shower）的图片透出来。
+            // 否则自定义背景永远被这块渐变盖住，用户看到的还是默认蓝/深蓝。
+            if backgrounds.image(.shower) == nil {
+                backgroundGradient.ignoresSafeArea()
+            }
 
             ScrollView {
                 VStack(spacing: 0) {

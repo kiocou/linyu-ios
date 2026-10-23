@@ -73,8 +73,6 @@ struct MainScreenView: View {
 
     var body: some View {
         ZStack {
-            AppBackground()
-
             ScrollView {
                 LazyVStack(spacing: 16) {
                     // ⚠️ 顶部留白和账单页 / 我的页一致（都是 20），

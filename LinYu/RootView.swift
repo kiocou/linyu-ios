@@ -47,6 +47,8 @@ struct RootView: View {
                     )
                 }
             }
+            // ⚠️ 不播放动画时这一层必须让点击穿过，否则它铺满全屏会挡住所有按钮
+            .allowsHitTesting(reveal.animation != nil)
         }
         .environmentObject(reveal)
         .environment(\.appColors, colors)

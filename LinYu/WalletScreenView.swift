@@ -31,8 +31,6 @@ struct WalletScreenView: View {
 
     var body: some View {
         ZStack {
-            AppBackground()
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // 标题按**钱在哪**写：一卡通 → 「一卡通余额」，钱包 → 「趣智校园余额」

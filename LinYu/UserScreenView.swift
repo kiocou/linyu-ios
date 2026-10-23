@@ -128,14 +128,9 @@ struct UserScreenView: View {
 
     var body: some View {
         ZStack {
-            AppBackground()
-
-            if let page = presentation.page {
-                switch page {
-                case .background: CustomBackgroundView(onBack: { presentation.page = nil })
-                case .log: LogView(onBack: { presentation.page = nil })
-                }
-            } else if showSettings {
+            // 整屏页面（背景装扮 / 运行日志）由 MainTabView 渲染 —— 它们必须盖住
+            // 底部导航和整个屏幕（对照 Android 的全屏 Dialog），放在这里会被页面范围限制。
+            if showSettings {
                 settingsPage
             } else {
                 profilePage
