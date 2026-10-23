@@ -30,6 +30,7 @@ jobs:
             LinYu/ApiModels.swift LinYu/BillService.swift LinYu/AppDataStore.swift \
             LinYu/PendingSettlement.swift LinYu/SettlementEngine.swift \
             LinYu/ActiveOrderStore.swift LinYu/MoneyFormat.swift \
+            LinYu/DeviceControlPolicy.swift LinYu/CloudShower.swift Tests/DeviceControlRegression.swift \
             Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
             Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \
             -o "$RUNNER_TEMP/linyu-data-tests"

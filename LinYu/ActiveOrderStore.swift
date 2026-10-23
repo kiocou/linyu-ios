@@ -15,6 +15,8 @@ struct ActiveOrderRecord: Codable, Equatable {
     var deviceMac: String
     var deviceEmoji: String
     var preDeduct: Double
+    /// 新记录显式保存控制通道；旧记录缺字段时保持未知，由设备台账确认。
+    var isBluetooth: Bool? = nil
 }
 
 /// 活跃订单仓库 —— 逐条对照 Android 的 `data/ActiveOrderRepository.kt`。

@@ -1,8 +1,13 @@
 import UserNotifications
+import Combine
 
-final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
+final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = AppNotifications()
     private let center = UNUserNotificationCenter.current()
+    @Published private(set) var actions: [DeviceNotificationAction] = []
+    static var accountKey: String { Session.shared.projectId + ":" + Session.shared.accountId }
+
+    func consume(_ id: UUID) { actions.removeAll { $0.id == id } }
 
     /// 「结束用水」按钮的 action id
     static let stopAction = "LINYU_STOP_ACTION"
@@ -11,6 +16,9 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
 
     func configure() {
         center.delegate = self
+        // 旧版通知没有目标身份，不能保留可误导的停止入口。
+        center.removePendingNotificationRequests(withIdentifiers: ["linyu.inUse", "linyu.finished"])
+        center.removeDeliveredNotifications(withIdentifiers: ["linyu.inUse", "linyu.finished"])
         // 对照 Android 通知栏那条「结束用水」按钮。
         // ⚠️ iOS 的通知**不会常驻**、也不能像前台服务那样每秒刷新计时，
         // 所以这里只做到「用中有一条通知 + 一键结束」，这是系统能力的边界。
@@ -30,20 +38,22 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// 开阀成功后挂一条「使用中」通知（对照 Android `Notifier.notifyInUse`）
-    func inUse(device: String) {
+    func inUse(device: String, snCode: String, orderNo: String, startedAt: Int64) {
         guard Prefs.notifyEnabled, Prefs.notifyInUse else { return }
         let name = device.count > 14 ? "…" + String(device.suffix(13)) : device
         let content = UNMutableNotificationContent()
         content.title = "正在使用 · " + name
         content.body = "点开回到使用页；也可以在通知上直接结束用水"
         content.categoryIdentifier = Self.inUseCategory
+        content.userInfo = DeviceNotificationTarget(accountKey: Self.accountKey, snCode: snCode,
+                                                    orderNo: orderNo, startedAt: startedAt).userInfo
         content.sound = nil
-        center.add(UNNotificationRequest(identifier: "linyu.inUse", content: content, trigger: nil)) { error in
+        center.add(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: false), content: content, trigger: nil)) { error in
             if let error { AppLog.shared.w("使用中通知发送失败：\(error.localizedDescription)") }
         }
     }
 
-    /// 通知上的按钮点击 —— 只记一个待处理标记，回到前台再执行。
+    /// 通知上的按钮点击 —— 排队保存原设备与订单身份，回到前台再执行。
     ///
     /// ⚠️ 不能在回调里直接发关阀请求：CoreBluetooth 和网络在后台都不保证可用，
     /// 而且 App 可能被系统挂起。放到前台执行才可靠。
@@ -52,23 +62,34 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if response.actionIdentifier == Self.stopAction {
-            Prefs.pendingStopRequest = true
-        } else if response.notification.request.identifier == "linyu.inUse" {
-            Prefs.pendingOpenShower = true
+        let request = response.notification.request
+        guard response.actionIdentifier == Self.stopAction ||
+                (response.actionIdentifier == UNNotificationDefaultActionIdentifier &&
+                 request.content.categoryIdentifier == Self.inUseCategory),
+              let target = DeviceNotificationTarget(userInfo: request.content.userInfo) else {
+            completionHandler(); return
         }
-        completionHandler()
+        DispatchQueue.main.async {
+            self.actions.append(DeviceNotificationAction(target: target, stop: response.actionIdentifier == Self.stopAction))
+            completionHandler()
+        }
     }
     func requestPermission() async -> Bool {
         do { return try await center.requestAuthorization(options: [.alert, .sound, .badge]) }
         catch { AppLog.shared.w("通知授权失败：\(error.localizedDescription)"); return false }
     }
     func clear() {
-        center.removePendingNotificationRequests(withIdentifiers: ["linyu.inUse", "linyu.finished"])
-        center.removeDeliveredNotifications(withIdentifiers: ["linyu.inUse", "linyu.finished"])
+        actions.removeAll()
+        center.removeAllPendingNotificationRequests()
+        center.removeAllDeliveredNotifications()
     }
-    func finished(device: String, elapsed: Int, amount: Double?, automatic: Bool) {
-        center.removeDeliveredNotifications(withIdentifiers: ["linyu.inUse"])
+    func clearInUse(snCode: String) {
+        let id = DeviceNotificationTarget.notificationID(snCode: snCode, finished: false)
+        center.removePendingNotificationRequests(withIdentifiers: [id])
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+    }
+    func finished(device: String, snCode: String, elapsed: Int, amount: Double?, automatic: Bool) {
+        // 使用中通知在确认关阀时撤销，不能等异步结算返回再删：同设备可能已开新单。
         guard Prefs.notifyEnabled, automatic ? Prefs.notifyAutoClose : Prefs.notifyFinished else { return }
         let name = device.count > 14 ? "…" + String(device.suffix(13)) : device
         let content = UNMutableNotificationContent()
@@ -76,7 +97,7 @@ final class AppNotifications: NSObject, UNUserNotificationCenterDelegate {
         let duration = elapsed < 60 ? "\(elapsed)秒" : "\(elapsed / 60)分\(elapsed % 60)秒"
         content.body = "用时 \(duration) · " + (amount.map { $0 > 0 ? "消费 \(MoneyFormat.withSymbol($0))" : "无消费" } ?? "结算中")
         if automatic && Prefs.notifyAlert { content.sound = .default }
-        center.add(UNNotificationRequest(identifier: "linyu.finished", content: content, trigger: nil)) { error in
+        center.add(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: true), content: content, trigger: nil)) { error in
             if let error { AppLog.shared.w("通知发送失败：\(error.localizedDescription)") }
         }
     }

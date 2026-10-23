@@ -151,10 +151,10 @@ struct UserScreenView: View {
                 editMode = false
             }
         )
-        .alert(flow.restoredOrders.isEmpty ? "确认退出" : "无法退出", isPresented: $showLogoutConfirm) {
-            if flow.restoredOrders.isEmpty {
+        .alert(flow.restoredOrders.isEmpty && !flow.controlBusy ? "确认退出" : "无法退出", isPresented: $showLogoutConfirm) {
+            if flow.restoredOrders.isEmpty && !flow.controlBusy {
                 Button("退出", role: .destructive) {
-                    guard flow.restoredOrders.isEmpty else { return }
+                    guard flow.restoredOrders.isEmpty, !flow.controlBusy else { return }
                     showSettings = false
                     flow.reset()
                     session.logout()
@@ -164,7 +164,7 @@ struct UserScreenView: View {
                 Button("返回", role: .cancel) {}
             }
         } message: {
-            Text(flow.restoredOrders.isEmpty ? "确定退出登录？" : "设备使用中，无法退出")
+            Text(flow.restoredOrders.isEmpty && !flow.controlBusy ? "确定退出登录？" : "设备使用中，无法退出")
         }
     }
 

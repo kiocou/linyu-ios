@@ -1,7 +1,6 @@
 import Foundation
 
 enum ApiError: Error { case transport(String); case unauthorized(status: Int) }
-struct EmptyData: Decodable {}
 enum Prefs {
     static var campusBalance = ""
     static var walletBalance = ""
@@ -25,6 +24,9 @@ enum ApiClient {
     static var failingMonth: String?
     static var delay: UInt64 = 0
     static var activeRequests = 0
+    static var postPaths: [String] = []
+    static var postResponse = "{\"success\":true,\"data\":null}"
+    static var failPost = false
     static func get(_ path: String, query: [String: String] = [:], tag: String? = nil) async throws -> Data {
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -40,7 +42,9 @@ enum ApiClient {
         return Data("{\"success\":true,\"data\":null}".utf8)
     }
     static func post(_ path: String, form: [String: String], tag: String? = nil) async throws -> Data {
-        Data("{\"success\":true,\"data\":null}".utf8)
+        postPaths.append(path)
+        if failPost { throw URLError(.notConnectedToInternet) }
+        return Data(postResponse.utf8)
     }
     static func decode<T: Decodable>(_ type: T.Type, from data: Data, path: String) throws -> APIResponse<T> {
         try JSONDecoder().decode(APIResponse<T>.self, from: data)

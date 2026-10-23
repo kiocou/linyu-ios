@@ -32,7 +32,7 @@ enum CloudShower {
     }
 
     /// 开阀。`budgetMs` 是轮询确认的总预算（Android 也是 6 秒）。
-    static func open(snCode: String, budgetMs: Int = 6_000) async -> OpenOutcome {
+    static func open(snCode: String, budgetMs: Int = 6_000, allowNewOrder: Bool = true, expectedOrderNo: String? = nil) async -> OpenOutcome {
         guard !snCode.isEmpty else { return .failed("设备信息不完整") }
         let deadline = Date().addingTimeInterval(Double(budgetMs) / 1000.0)
 
@@ -44,11 +44,17 @@ enum CloudShower {
                     return .inUseByOthers
                 }
                 let orderNo = using.data?.orderNo ?? ""
+                if let expectedOrderNo, !expectedOrderNo.isEmpty, expectedOrderNo != orderNo {
+                    return .failed("设备订单已变化，请刷新设备状态后操作")
+                }
                 let pre = using.data?.preDeductMoney?.value
                 AppLog.shared.i("设备 \(snCode) 已有进行中订单 \(orderNo)，恢复")
                 return .resumed(orderNo: orderNo, preDeduct: pre)
             }
         }
+
+        // 恢复/通知不是开新阀的授权：查询失败或已无订单时不能申请费率。
+        guard allowNewOrder else { return .failed("未能确认原订单仍在使用，请刷新设备状态") }
 
         // ② 下发开阀
         let rateResp: APIResponse<DownRateData>

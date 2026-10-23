@@ -22,6 +22,8 @@ struct MainTabView: View {
     @ObservedObject private var backgrounds = BackgroundStore.shared
     /// 挤号检测（25 秒心跳 + 401/403 识别）—— 对照 Android `startKickWatch`
     @StateObject private var kickWatch = KickWatch()
+    @ObservedObject private var notifications = AppNotifications.shared
+    @State private var handlingNotification = false
     @Environment(\.scenePhase) private var scenePhase
     /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
     @State private var settingsVisible = false
@@ -155,6 +157,7 @@ struct MainTabView: View {
             flow.peripheralProvider = { [scanner] sn in scanner.peripheral(forSn: sn) }
             flow.centralProvider = { [scanner] in scanner.manager }
             flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
+            await processNotificationActions()
         }
         // 启动时：补结算上一笔待对账 + 拉一次未支付账单（开阀失败弹窗要用）
         .task { await flow.reconcileSettlements() }
@@ -169,24 +172,22 @@ struct MainTabView: View {
         .onChange(of: scenePhase) { phase in
             if phase != .active { flow.stopOrderWatch() }
             guard phase == .active else { return }
-            // 通知上的「结束用水」/「回到使用页」在这里落地
-            // （回调里只记标记，不能在后台直接发请求）
-            if Prefs.pendingOpenShower {
-                Prefs.pendingOpenShower = false
-                showerMinimized = false
-            }
-            let stopRequested = Prefs.pendingStopRequest
-            Prefs.pendingStopRequest = false
             Task {
+                // 先处理指定设备的停止请求，不让账单刷新延迟关阀。
+                await processNotificationActions()
                 await flow.reconcileOnResume()
                 await flow.reconcileSettlements()
                 await store.reload()
                 flow.startOrderWatch()
-                if stopRequested, flow.activeOrder != nil {
-                    showerMinimized = false
-                    await flow.close()
-                }
             }
+        }
+        // 覆盖冷启动、前台点击通知，以及回调晚于 scenePhase 的情况。
+        .onChange(of: notifications.actions) { _ in Task { await processNotificationActions() } }
+        .onChange(of: flow.isStarting) { busy in
+            if !busy { Task { await processNotificationActions() } }
+        }
+        .onChange(of: flow.isStopping) { busy in
+            if !busy { Task { await processNotificationActions() } }
         }
         .task { await store.loadProfileIfNeeded() }
         .task { await store.loadUseCode() }
@@ -194,7 +195,7 @@ struct MainTabView: View {
         .onChange(of: flow.settlementRevision) { _ in Task { await store.reload() } }
         // 订单变化（新开阀 / 被清掉）时同步监控任务
         .onChange(of: flow.restoredOrders) { _ in flow.startOrderWatch() }
-        .onChange(of: flow.activeOrder?.startedAt) { _ in
+        .onChange(of: flow.activeOrder?.snCode) { _ in
             showerMinimized = false
             settingsVisible = false
             if flow.activeOrder == nil { tab = 0 }
@@ -204,6 +205,21 @@ struct MainTabView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
                 // 只在还是同一条消息时才清，避免把后来的新消息误关
                 if flow.toast == msg { flow.toast = nil }
+            }
+        }
+    }
+
+    @MainActor
+    private func processNotificationActions() async {
+        guard scenePhase == .active, !handlingNotification else { return }
+        handlingNotification = true
+        defer { handlingNotification = false }
+        while scenePhase == .active, let action = notifications.actions.first {
+            guard await flow.handleNotification(action) else { return }
+            notifications.consume(action.id)
+            if !action.stop, flow.activeOrder?.snCode == action.target.snCode {
+                showerMinimized = false
+                settingsVisible = false
             }
         }
     }
