@@ -167,6 +167,8 @@ final class ShowerFlow: ObservableObject {
             ))
         }
         restoredOrders = ActiveOrderStore.all()
+        // 使用中通知：同一 identifier 重复 add 只会替换，不会刷屏
+        AppNotifications.shared.inUse(device: order.device.displayName)
     }
 
     /// 清掉这台设备的本地使用状态
@@ -1008,6 +1010,57 @@ final class ShowerFlow: ObservableObject {
             return
         }
         await open(device: info, peripheral: nil, central: nil)
+    }
+
+    // MARK: - 设备占用状态
+
+    /// 每台设备的「订单是不是自己的」。`false` = 他人使用中。
+    ///
+    /// ⚠️ 必须**按 snCode 记**，不能用全局布尔：查询是异步的，
+    /// 全局变量会被后一台设备的响应覆盖（Android v3.0.x 修过这个 bug）。
+    @Published private(set) var deviceOwner: [String: Bool] = [:]
+
+    func isOwnerFor(_ snCode: String) -> Bool {
+        guard !snCode.isEmpty else { return true }
+        return deviceOwner[snCode] ?? true
+    }
+
+    /// 查这台设备当前有没有订单、是不是自己的 —— 对照 Android `refreshDeviceStatus`。
+    ///
+    /// 两个作用，缺一不可：
+    /// 1. **他人使用中**：设备详情弹窗据此把按钮置灰（不能拿别人的订单去开阀）
+    /// 2. **使用码启动检测**：用物理键盘使用码开机后，扫描到时这里会发现「已经有订单」，
+    ///    于是把它记进活跃订单 —— 首页立刻出现「使用中的设备」，用户能直接去关阀
+    func refreshDeviceStatus(_ snCode: String) async {
+        guard !snCode.isEmpty else { return }
+        guard let q = try? await CloudShower.queryUsing(snCode: snCode) else { return }
+
+        let hasOrder = q.errorCode == 307 || (q.success && q.data?.orderNo != nil)
+        guard hasOrder else {
+            deviceOwner[snCode] = true
+            return
+        }
+
+        let owner = q.data?.isOwner ?? true
+        deviceOwner[snCode] = owner
+        AppLog.shared.i("设备 \(snCode) 已有订单，owner=\(owner)")
+
+        // 只有自己的订单才记进活跃订单；别人的记进去会导致
+        // 卡片显示「使用中」、点停止时拿别人的 orderNo 去关阀
+        guard owner, ActiveOrderStore.find(snCode) == nil else { return }
+        guard let info = cachedDevice(snCode) else { return }
+        ActiveOrderStore.upsert(ActiveOrderRecord(
+            snCode: snCode,
+            orderNo: q.data?.orderNo ?? "",
+            deviceName: info.displayName,
+            deviceMac: info.macAddress ?? snCode,
+            deviceEmoji: info.typeEmoji,
+            preDeduct: info.withholdYuan ?? 0
+        ))
+        if Prefs.startedAt(snCode) <= 0 {
+            Prefs.setStartedAt(snCode, Int64(Date().timeIntervalSince1970 * 1000))
+        }
+        restoredOrders = ActiveOrderStore.all()
     }
 
     /// 由外部（`MainTabView`）注入，避免这一层依赖扫描器/数据容器。

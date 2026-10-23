@@ -131,10 +131,22 @@ struct MainTabView: View {
         // 回前台对齐用水状态（Android 的 `reconcileShowerOnResume`）
         .onChange(of: scenePhase) { phase in
             guard phase == .active else { return }
+            // 通知上的「结束用水」/「回到使用页」在这里落地
+            // （回调里只记标记，不能在后台直接发请求）
+            if Prefs.pendingOpenShower {
+                Prefs.pendingOpenShower = false
+                showerMinimized = false
+            }
+            let stopRequested = Prefs.pendingStopRequest
+            Prefs.pendingStopRequest = false
             Task {
                 await flow.reconcileOnResume()
                 await flow.reconcileSettlements()
                 await store.reload()
+                if stopRequested, flow.activeOrder != nil {
+                    showerMinimized = false
+                    await flow.close()
+                }
             }
         }
         .task { await store.loadProfileIfNeeded() }

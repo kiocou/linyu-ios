@@ -218,6 +218,22 @@ enum Prefs {
         set { d.set(newValue, forKey: "bleSessionJson") }
     }
 
+    // MARK: - 通知按钮触发的待处理动作
+    //
+    // iOS 的通知按钮回调**不能**直接发关阀请求：后台既连不上蓝牙也不保证网络。
+    // 所以只记标记，回到前台由界面执行（对照 Android 通知 PendingIntent 的落点）。
+
+    /// 通知上点了「结束用水」
+    static var pendingStopRequest: Bool {
+        get { d.bool(forKey: "pendingStopRequest") }
+        set { d.set(newValue, forKey: "pendingStopRequest") }
+    }
+    /// 点了「使用中」通知本体 → 回到使用页
+    static var pendingOpenShower: Bool {
+        get { d.bool(forKey: "pendingOpenShower") }
+        set { d.set(newValue, forKey: "pendingOpenShower") }
+    }
+
     // MARK: - 退出登录清理
 
     /// 清掉**账号相关**的本地数据 —— 逐条对照 Android 的 `PrefsHelper.clear`。
@@ -240,6 +256,7 @@ enum Prefs {
             "lastConsumeMoney", "lastConsumeTime",
             "campusBalance", "walletBalance", "schoolName",
             "pendingSettlements",
+            "pendingStopRequest", "pendingOpenShower",
             // 设备级知识，但和账号绑定过（用户确认过「这台要蓝牙」），换号不适用
             "bleDevices",
         ] {

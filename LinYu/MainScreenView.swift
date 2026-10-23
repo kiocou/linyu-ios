@@ -172,7 +172,8 @@ struct MainScreenView: View {
             DeviceDetailDialogView(
                 device: d,
                 isActive: isDeviceActive(d),
-                isOwner: true,
+                // 他人使用中：按钮置灰，避免拿别人的订单去开阀
+                isOwner: flow.isOwnerFor(d.snCode ?? ""),
                 onDismiss: { detailDevice = nil },
                 onConfirm: { confirmOpen(d) }
             )
@@ -507,6 +508,10 @@ struct MainScreenView: View {
     private func resolveDevice(_ sn: String) async {
         defer { resolving.remove(sn) }
         await store.deviceInfo(sn)
+        // 台账拿到之后再问一次「这台有没有订单」——对照 Android `fetchInfo`：
+        // 用使用码在键盘上开机后，这里能发现「已经有订单」，首页就会出现使用中卡片
+        guard store.deviceInfos[sn] != nil else { return }
+        await flow.refreshDeviceStatus(sn)
     }
 
     private func openDetail(_ sn: String) async {
@@ -517,6 +522,8 @@ struct MainScreenView: View {
             flow.toast = "查不到这台设备的信息（可能不是本校设备）"
             return
         }
+        // 弹详情前先把占用状态问清楚（Android `fetchDeviceInfo` 同）
+        await flow.refreshDeviceStatus(sn)
         detailDevice = info
     }
 
