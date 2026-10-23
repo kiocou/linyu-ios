@@ -94,7 +94,8 @@ struct LogView: View {
                     .foregroundStyle(colors.warning).padding(.bottom, 12)
             }
         }
-        .background(colors.solidSurface)
+        // 整屏不透明底（对照 Android `Surface(fillMaxSize, SolidSurface)`）
+        .background(colors.solidSurface.ignoresSafeArea())
         .sheet(isPresented: $showShare) {
             if let url = exportURL { ShareSheet(items: [url]) }
         }
