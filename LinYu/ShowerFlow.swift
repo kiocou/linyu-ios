@@ -208,14 +208,21 @@ final class ShowerFlow: ObservableObject {
     // MARK: - 开阀
 
     /// 统一入口：自动决定走云端还是蓝牙。
+    ///
+    /// ## 允许多单同时存在
+    ///
+    /// 对照 Android：活跃订单是**列表**，一个账号可以同时开着两台设备
+    /// （比如边洗衣服边接水）。`activeOrder` 只表示「使用页当前显示哪一单」，
+    /// 其它单继续留在 `ActiveOrderStore` 里，首页照样能看到、能恢复。
     func open(device: DeviceInfo, peripheral: CBPeripheral?, central: CBCentralManager?) async {
-        guard activeOrder == nil else {
-            toast = "已经有一单在进行中"
-            return
-        }
         guard !isStarting else { return }
 
         let sn = device.snCode ?? ""
+        // 同一台设备不重复开：已经在用就直接回使用页
+        if let current = activeOrder, current.snCode == sn {
+            toast = "这台设备正在使用中"
+            return
+        }
         guard !sn.isEmpty else {
             errorMessage = "设备信息不完整（缺少 snCode）"
             return
@@ -972,7 +979,8 @@ final class ShowerFlow: ObservableObject {
     /// 再让通道自己确认（云端查 `queryUsing`、蓝牙读状态帧）。
     /// 两边都会回「已有订单、是你的」→ 直接沿用，**不会重新开阀、不会重复扣预扣**。
     func resume(record: ActiveOrderRecord) async {
-        guard activeOrder == nil else { return }
+        // 已经在显示这一单 → 什么都不用做
+        if activeOrder?.snCode == record.snCode { return }
         let sn = record.snCode
         guard !sn.isEmpty else { return }
 

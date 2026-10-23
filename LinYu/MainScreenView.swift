@@ -81,15 +81,15 @@ struct MainScreenView: View {
                     // 否则三个 tab 的标题不在同一高度
                     header
 
-                    // 使用中的设备
-                    if let order = flow.activeOrder {
+                    // 使用中的设备（**可以有多台**，对照 Android `activeOrders.forEach`）
+                    if !flow.restoredOrders.isEmpty {
                         sectionTitle("使用中的设备")
-                        activeOrderCard(order)
-                    } else if let record = flow.restoredOrders.first {
-                        // 本地有落盘的订单，但界面不在使用页：App 被杀重开 / 在别处开的阀。
-                        // 对照 Android：`activeOrders` 才是「有没有在用水」的事实来源。
-                        sectionTitle("使用中的设备")
-                        restoredOrderCard(record)
+                        ForEach(flow.restoredOrders, id: \.snCode) { record in
+                            restoredOrderCard(
+                                record,
+                                isCurrent: flow.activeOrder?.snCode == record.snCode
+                            )
+                        }
                     } else if !Prefs.lastDeviceSnCode.isEmpty {
                         sectionTitle("上次使用设备")
                         lastDeviceCard
@@ -124,7 +124,7 @@ struct MainScreenView: View {
             .clipped()
             .refreshable {
                 await refreshAll()
-                if flow.activeOrder == nil { scanner.start() }
+                if flow.restoredOrders.isEmpty { scanner.start() }
             }
         }
         .fullScreenCover(isPresented: $showQr) {
@@ -145,7 +145,7 @@ struct MainScreenView: View {
             // 之前每次切回首页都重新 start()，而 start() 会清空列表，
             // 于是设备先闪回广播名（KLCXKJ-Water）再变回房间名。
             // Android 那边是下拉刷新才重新扫描。
-            if scanner.devices.isEmpty && flow.activeOrder == nil { scanner.start() }
+            if scanner.devices.isEmpty && flow.restoredOrders.isEmpty { scanner.start() }
             for device in scanner.devices {
                 if let sn = device.parsedSnCode { await resolveDevice(sn) }
             }
@@ -241,59 +241,13 @@ struct MainScreenView: View {
 
     // MARK: - 使用中的设备
 
-    private func activeOrderCard(_ order: ActiveOrder) -> some View {
-        HStack(spacing: 14) {
-            DeviceGlyph(
-                emoji: order.device.typeEmoji,
-                boxSize: 48,
-                cornerRadius: 14,
-                emojiSize: 22,
-                iconSize: 26,
-                background: DeviceGlyph.background(for: order.device.typeEmoji, colors: colors)
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                TailEllipsisText(
-                    text: order.device.displayName,
-                    fontSize: 15,
-                    weight: .semibold,
-                    color: colors.textPrimary
-                )
-                HStack(spacing: 8) {
-                    Text("使用中")
-                        .font(.system(size: 11))
-                        .foregroundStyle(colors.warning)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(colors.activeBg)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    Text("点击恢复订单")
-                        .font(.system(size: 12))
-                        .foregroundStyle(colors.textSecondary)
-                }
-            }
-            Spacer(minLength: 0)
-
-            Button("恢复") {
-                onResumeOrder()
-            }
-            .buttonStyle(AccentButtonStyle(colors: colors))
-        }
-        .padding(16)
-        .linyuCard(colors)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(colors.border, lineWidth: 0.8)
-        )
-    }
-
     // MARK: - 上次使用设备
 
     /// 已落盘、但未进入使用页的订单（App 重启 / 被挤号重登后的恢复入口）。
     ///
     /// ⚠️ 这张卡不能省：没有它，用户重开 App 后**完全不知道水还在流**，
     /// 也找不到关阀入口——只能等账单出来才知道被扣了钱。
-    private func restoredOrderCard(_ record: ActiveOrderRecord) -> some View {
+    private func restoredOrderCard(_ record: ActiveOrderRecord, isCurrent: Bool = false) -> some View {
         HStack(spacing: 14) {
             DeviceGlyph(
                 emoji: record.deviceEmoji.isEmpty ? "🚿" : record.deviceEmoji,
@@ -319,15 +273,19 @@ struct MainScreenView: View {
                         .padding(.vertical, 2)
                         .background(colors.activeBg)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    Text("上次未正常结束，点击恢复")
+                    Text(isCurrent ? "点击回到使用页" : "点击恢复订单")
                         .font(.system(size: 12))
                         .foregroundStyle(colors.textSecondary)
                 }
             }
             Spacer(minLength: 0)
 
-            Button("恢复") {
-                Task { await flow.resume(record: record) }
+            Button(isCurrent ? "继续" : "恢复") {
+                if isCurrent {
+                    onResumeOrder()
+                } else {
+                    Task { await flow.resume(record: record) }
+                }
             }
             .buttonStyle(AccentButtonStyle(colors: colors))
         }
@@ -527,19 +485,29 @@ struct MainScreenView: View {
         detailDevice = info
     }
 
+    /// 这台设备有没有活跃订单。
+    ///
+    /// ⚠️ 不能只比 `activeOrder`：那只是「使用页当前显示的那一单」，
+    /// 同时开着两台时，另一台也是「使用中」，点它应该恢复而不是再开一次。
     private func isDeviceActive(_ device: DeviceInfo) -> Bool {
-        guard let order = flow.activeOrder else { return false }
-        return order.snCode == (device.snCode ?? "")
+        let sn = device.snCode ?? ""
+        guard !sn.isEmpty else { return false }
+        return flow.restoredOrders.contains { $0.snCode == sn }
     }
 
     /// 详情弹窗里点了「开始使用」
     private func confirmOpen(_ device: DeviceInfo) {
         detailDevice = nil
-        if isDeviceActive(device) {
-            onResumeOrder()
+        let sn = device.snCode ?? ""
+        if let record = flow.restoredOrders.first(where: { $0.snCode == sn }) {
+            // 已经在用：当前显示的那一单回使用页，其它单走恢复流程
+            if flow.activeOrder?.snCode == sn {
+                onResumeOrder()
+            } else {
+                Task { await flow.resume(record: record) }
+            }
             return
         }
-        let sn = device.snCode ?? ""
         let peripheral = scanner.peripheral(forSn: sn)
         let central = scanner.manager
 

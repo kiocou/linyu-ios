@@ -152,10 +152,10 @@ struct UserScreenView: View {
                 editMode = false
             }
         )
-        .alert(flow.activeOrder == nil ? "确认退出" : "无法退出", isPresented: $showLogoutConfirm) {
-            if flow.activeOrder == nil {
+        .alert(flow.restoredOrders.isEmpty ? "确认退出" : "无法退出", isPresented: $showLogoutConfirm) {
+            if flow.restoredOrders.isEmpty {
                 Button("退出", role: .destructive) {
-                    guard flow.activeOrder == nil else { return }
+                    guard flow.restoredOrders.isEmpty else { return }
                     showSettings = false
                     flow.reset()
                     session.logout()
@@ -165,7 +165,7 @@ struct UserScreenView: View {
                 Button("返回", role: .cancel) {}
             }
         } message: {
-            Text(flow.activeOrder == nil ? "确定退出登录？" : "设备使用中，无法退出")
+            Text(flow.restoredOrders.isEmpty ? "确定退出登录？" : "设备使用中，无法退出")
         }
     }
 
