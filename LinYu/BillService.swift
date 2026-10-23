@@ -157,6 +157,33 @@ enum BillService {
         await fetch(ProjectInfo.self, path: "/project/info/triple", tag: "projectInfo")?.data
     }
 
+    // MARK: - 未支付账单 / 手动代扣
+
+    /// 未支付账单列表（残留账单）
+    ///
+    /// 就是俗称的「残留账单」—— 12 点后结束用水、或者一卡通余额不足的时候，
+    /// 服务端结算没扣成，账单留在待扣状态。返回**扁平结构**（不套 consumeBillDTO）。
+    ///
+    /// ⚠️ 失败返回 nil，**不是空数组**：调用方要靠这个区别决定「保持原样」还是「真的没有」。
+    static func loadUnpaid() async -> [UnpaidBill]? {
+        do {
+            let data = try await ApiClient.post(
+                "/order/weixinScorePay/unPay/queryBill",
+                form: [:],
+                tag: "unpaid"
+            )
+            let resp = try ApiClient.decodeShell([UnpaidBill].self, from: data, path: "unpaid")
+            guard resp.success else {
+                AppLog.shared.w("未支付账单查询失败：\(resp.displayMessage ?? "")\(resp.errorCode.map { "（\($0)）" } ?? "")")
+                return nil
+            }
+            return resp.data ?? []
+        } catch {
+            AppLog.shared.w("未支付账单查询异常：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// 把两个余额来源刷进 Prefs（界面读 Prefs，所以刷完要手动触发刷新）
     static func refreshBalances() async {
         guard !Task.isCancelled else { return }

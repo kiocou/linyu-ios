@@ -236,18 +236,79 @@ struct OpeningDialogView: View {
 struct ShowerErrorDialogView: View {
     @Environment(\.appColors) private var colors
     let message: String
+    /// 服务端**明确拒绝**才可能和欠费有关。
+    ///
+    /// ⚠️ 网络异常、设备被占用、结果未知都跟账单无关 —— 把它们也引导到「补扣」，
+    /// 用户会因为一次 WiFi 掉线去白扣钱。
+    var kind: ShowerErrorKind = .other
+    /// 可补扣的未支付账单（只在 `kind == .serverRejected` 时传）
+    var unpaid: [UnpaidBill] = []
+    var deducting: Bool = false
+    var onDeductAll: () -> Void = {}
     let onDismiss: () -> Void
 
+    /// 扣钱前的二次确认态。key 跟着错误内容走，换一条错误就复位
+    @State private var confirming = false
+
+    /// 金额是服务端给的**字符串**，解析不出来时**不能悄悄按 0 算**：
+    /// 这张弹窗存在的唯一目的就是「会动钱，再停一下」，数字失真就失去意义了
+    private var amounts: [Double?] { unpaid.map { $0.yuan } }
+    private var total: Double { amounts.reduce(0) { $0 + ($1 ?? 0) } }
+    private var amountKnown: Bool { amounts.allSatisfy { $0 != nil } }
+
+    private var shownBills: [UnpaidBill] { kind == .serverRejected ? unpaid : [] }
+
     var body: some View {
-        DialogScrim(onTapOutside: onDismiss) {
-            AlertCard(title: "开阀失败", titleAlign: .leading) {
-                Text(message)
-                    .font(.system(size: 14))
-                    .foregroundStyle(colors.textPrimary)
+        ZStack {
+            DialogScrim(onTapOutside: onDismiss) {
+                AlertCard(title: shownBills.isEmpty ? "开阀失败" : "开阀失败 · 有未扣账单",
+                          titleAlign: .leading) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(message)
+                            .font(.system(size: 14))
+                            .foregroundStyle(colors.textPrimary)
+
+                        if !shownBills.isEmpty {
+                            Text("检测到 \(shownBills.count) 笔没扣成功的账单：")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(colors.warning)
+                                .padding(.top, 12)
+                            ForEach(shownBills) { bill in
+                                Text("· ¥\(bill.consumeMoney ?? "?")   \(String((bill.consumeDate ?? "").prefix(16)))")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(colors.textSecondary)
+                                    .padding(.top, 4)
+                            }
+                            Text("账户有欠费时服务端会拒绝开阀")
+                                .font(.system(size: 11))
+                                .foregroundStyle(colors.textSecondary)
+                                .padding(.top, 8)
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } actions: {
-                DialogTextButton(title: "关闭", color: colors.accent, action: onDismiss)
-                DialogTextButton(title: "知道了", color: colors.accent, action: onDismiss)
+                } actions: {
+                    if shownBills.isEmpty {
+                        DialogTextButton(title: "知道了", color: colors.accent, action: onDismiss)
+                    } else {
+                        DialogTextButton(title: "关闭", color: colors.accent, action: onDismiss)
+                        DialogFilledButton(title: "立即补扣", color: colors.warning) {
+                            confirming = true
+                        }
+                    }
+                }
+            }
+
+            // 扣钱前的二次确认（和钱包页单笔代扣共用同一个组件，文案不会各写一份）
+            if confirming {
+                DeductConfirmDialogView(
+                    amount: amountKnown ? total : nil,
+                    detail: "共 \(shownBills.count) 笔",
+                    onConfirm: {
+                        confirming = false
+                        onDeductAll()
+                    },
+                    onDismiss: { confirming = false }
+                )
             }
         }
     }

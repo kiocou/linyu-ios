@@ -42,6 +42,14 @@ enum ShowerChannel {
     case ble
 }
 
+/// 开阀失败的类型 —— 对照 Android 的 `ShowerErrorKind`。
+///
+/// 只有 `.serverRejected` 才可能和「欠费」有关，才该引导用户去补扣。
+enum ShowerErrorKind {
+    case serverRejected
+    case other
+}
+
 /// 自动关停提示（对照 Android 的 `showAutoCloseDialog`）
 struct AutoCloseNotice {
     let deviceName: String
@@ -86,7 +94,11 @@ final class ShowerFlow: ObservableObject {
     /// 开启进度文案（蓝牙表要好几步，不给进度用户会以为卡死）
     @Published private(set) var openingText = ""
     /// 开阀失败文案（非 nil 就弹窗）
-    @Published var errorMessage: String?
+    @Published var errorMessage: String? {
+        didSet { if errorMessage == nil { errorKind = .other } }
+    }
+    /// 失败原因分类：服务端明确拒绝 vs 其它（网络/本地校验/结果未知）
+    @Published private(set) var errorKind: ShowerErrorKind = .other
     /// 306 之后要问用户「要不要改用蓝牙」
     @Published var bleConfirmDevice: DeviceInfo?
     /// 轻提示
@@ -226,6 +238,7 @@ final class ShowerFlow: ObservableObject {
 
     func clearError() {
         errorMessage = nil
+        errorKind = .other
     }
 
     // MARK: 云端通道
@@ -280,7 +293,13 @@ final class ShowerFlow: ObservableObject {
             // 只有站在设备旁的人知道这台是不是蓝牙表 —— 必须问
             bleConfirmDevice = device
 
+        case let .rejected(msg):
+            // 服务端明确拒绝：可能是欠费，弹窗里给「立即补扣」入口
+            errorKind = .serverRejected
+            errorMessage = msg
+
         case let .failed(msg):
+            errorKind = .other
             errorMessage = msg
         }
     }

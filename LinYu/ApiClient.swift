@@ -46,6 +46,53 @@ struct ApiClient {
 
     // MARK: - 请求
 
+    /// POST **JSON body** —— 本项目唯一用它的就是手动代扣
+    /// （`/order/thirdTrade/single/json/pay`）。
+    ///
+    /// ⚠️ 别照其他接口改成 form-urlencoded：那个接口只收 JSON，
+    /// 换成表单会直接报参数错。而且它要的 `phoneSystem` 是 `WeChat`
+    /// （照抄官方 H5 抓包），不是 `android`。
+    static func postJSON(
+        _ path: String,
+        body: [String: Any],
+        tag: String? = nil
+    ) async throws -> Data {
+        guard let url = URL(string: baseURL + path) else {
+            throw ApiError.transport("URL 非法：\(path)")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        applyCommonHeaders(&req)
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        // 日志里不打印 loginCode：它是会令牌，进日志等于泄露会话
+        let preview = body.keys.sorted().map { key in
+            key == "loginCode" ? "\(key)=***" : "\(key)=\(body[key] ?? "")"
+        }.joined(separator: "&")
+
+        let started = Date()
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            let text = String(data: data, encoding: .utf8) ?? ""
+            AppLog.shared.i(
+                "HTTP \(code) POST(json) \(path) (\(ms)ms)\(tag.map { " [\($0)]" } ?? "")",
+                "req: \(preview)\nresp: \(text.prefix(600))"
+            )
+            if code == 401 || code == 403 {
+                throw ApiError.unauthorized(status: code)
+            }
+            return data
+        } catch let error as ApiError {
+            throw error
+        } catch {
+            AppLog.shared.e("HTTP FAIL POST(json) \(path)", "\(error.localizedDescription)")
+            throw ApiError.transport(error.localizedDescription)
+        }
+    }
+
     /// POST form-urlencoded
     static func post(
         _ path: String,

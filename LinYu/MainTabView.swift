@@ -17,6 +17,8 @@ struct MainTabView: View {
     @StateObject private var userPresentation = UserPresentation()
     /// 扫描器放在容器里：首页展示列表、「我的 → 绑定寝室」读附近设备，共用同一份结果
     @StateObject private var scanner = BLEScanner()
+    /// 未支付账单 + 手动代扣（对照 Android 的 MainViewModel 同名部分）
+    @StateObject private var deduct = DeductService()
     @ObservedObject private var backgrounds = BackgroundStore.shared
     /// 挤号检测（25 秒心跳 + 401/403 识别）—— 对照 Android `startKickWatch`
     @StateObject private var kickWatch = KickWatch()
@@ -59,7 +61,7 @@ struct MainTabView: View {
                                        onResumeOrder: { showerMinimized = false })
                             .id(refreshToken)
                     case 1:
-                        WalletScreenView(store: store, flow: flow)
+                        WalletScreenView(store: store, flow: flow, deduct: deduct)
                     default:
                         UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
                     }
@@ -119,8 +121,10 @@ struct MainTabView: View {
             flow.centralProvider = { [scanner] in scanner.manager }
             flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
         }
-        // 启动时：补结算上一笔待对账
+        // 启动时：补结算上一笔待对账 + 拉一次未支付账单（开阀失败弹窗要用）
         .task { await flow.reconcileSettlements() }
+        .task { await deduct.load() }
+        .task { deduct.onBillsChanged = { Task { await store.reload() } } }
         // 挤号检测：生命周期跟主界面走，回登录页就停
         .task { kickWatch.start() }
         .onDisappear { kickWatch.stop() }
@@ -151,6 +155,29 @@ struct MainTabView: View {
         }
     }
 
+    /// 批量补扣并给出与 Android 一致的收尾文案
+    private func deductAllUnpaid() async {
+        let summary = await deduct.deductAll()
+        guard let s = summary else {
+            flow.toast = "没有可补扣的账单，或正在处理另一笔代扣"
+            flow.clearError()
+            return
+        }
+        flow.clearError()
+        if s.unknown > 0 && s.ok == 0 && s.failed == 0 {
+            flow.toast = "补扣结果未知，请下拉刷新确认后再操作"
+        } else if s.unknown > 0 {
+            flow.toast = "成功 \(s.ok) 笔、失败 \(s.failed) 笔、\(s.unknown) 笔结果未知"
+        } else if s.failed == 0 {
+            flow.toast = "补扣成功，再试一次开阀"
+        } else if s.ok == 0 {
+            flow.toast = s.firstFailReason ?? "补扣失败，请到「钱包」页重试"
+        } else {
+            flow.toast = "成功 \(s.ok) 笔、失败 \(s.failed) 笔"
+        }
+        await store.reload()
+    }
+
     private func minimizeShower() {
         tab = 0
         settingsVisible = false
@@ -166,7 +193,16 @@ struct MainTabView: View {
                 OpeningDialogView(progress: flow.openingText)
             }
             if let msg = flow.errorMessage {
-                ShowerErrorDialogView(message: msg) { flow.clearError() }
+                ShowerErrorDialogView(
+                    message: msg,
+                    kind: flow.errorKind,
+                    // 只有服务端明确拒绝才把未扣账单摆出来：网络异常引导去补扣
+                    // 等于让用户为一次掉线白扣钱
+                    unpaid: deduct.deductibleBills,
+                    deducting: deduct.deductingConsumeDate != nil,
+                    onDeductAll: { Task { await deductAllUnpaid() } },
+                    onDismiss: { flow.clearError() }
+                )
             }
             if let device = flow.bleConfirmDevice {
                 BleRetryDialogView(

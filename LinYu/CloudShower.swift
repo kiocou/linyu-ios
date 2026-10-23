@@ -24,6 +24,10 @@ enum CloudShower {
         case inUseByOthers
         /// 服务端说设备不在线（306）→ 上层问用户要不要改用蓝牙
         case deviceOffline
+        /// 服务端**明确拒绝**（success=false 且不是 306）。
+        /// 只有这一类才可能和「欠费」有关，上层据此决定弹窗里要不要给「立即补扣」。
+        case rejected(String)
+        /// 本地/网络层面的失败（参数不全、请求发不出去、确认超时……）
         case failed(String)
     }
 
@@ -67,7 +71,7 @@ enum CloudShower {
             if rateResp.errorCode == 306 {
                 return .deviceOffline
             }
-            return .failed(rateResp.displayMessage ?? "开始失败")
+            return .rejected(rateResp.displayMessage ?? "开始失败")
         }
 
         // ③ 轮询确认（9 次 × 700ms）

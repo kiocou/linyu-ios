@@ -242,6 +242,29 @@ struct BillDTO: Decodable, Identifiable {
     }
 }
 
+/// `/order/weixinScorePay/unPay/queryBill` 的一项 —— 俗称「残留账单」。
+///
+/// ⚠️ 这是**扁平结构**（不像账单列表套一层 `consumeBillDTO`），
+/// 而且按 `consumeDate` 定位（不是 orderNo）—— 代扣接口也是拿它扣的。
+struct UnpaidBill: Decodable, Identifiable {
+    let orderId: String?
+    let orderNo: String?
+    let consumeDate: String?
+    /// ⚠️ **字符串**、单位是元（和账单列表一致，和 consumeOrder/result 那个厘不同）
+    let consumeMoney: String?
+    let description: String?
+
+    var id: String { orderId ?? consumeDate ?? orderNo ?? UUID().uuidString }
+    var yuan: Double? { consumeMoney.flatMap(Double.init) }
+
+    /// 设备名：`项目名:设备名` 里冒号之后那段，再套一遍格式化
+    var displayNamePart: String {
+        let raw = description ?? ""
+        guard let r = raw.range(of: ":") else { return raw }
+        return DeviceInfo.formatDeviceName(String(raw[r.upperBound...]))
+    }
+}
+
 /// `/account/info`
 struct AccountInfo: Decodable {
     let name: String?
