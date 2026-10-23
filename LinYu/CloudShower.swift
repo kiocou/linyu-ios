@@ -44,6 +44,9 @@ enum CloudShower {
                     return .inUseByOthers
                 }
                 let orderNo = using.data?.orderNo ?? ""
+                guard !ActiveOrderStore.wasFinished(snCode: snCode, orderNo: orderNo) else {
+                    return .failed("设备已关闭，请稍后重试")
+                }
                 if let expectedOrderNo, !expectedOrderNo.isEmpty, expectedOrderNo != orderNo {
                     return .failed("设备订单已变化，请刷新设备状态后操作")
                 }
@@ -51,6 +54,7 @@ enum CloudShower {
                 AppLog.shared.i("设备 \(snCode) 已有进行中订单 \(orderNo)，恢复")
                 return .resumed(orderNo: orderNo, preDeduct: pre)
             }
+            if using.success { ActiveOrderStore.confirmIdle(snCode) }
         }
 
         // 恢复/通知不是开新阀的授权：查询失败或已无订单时不能申请费率。
@@ -160,13 +164,9 @@ enum CloudShower {
             return .failed(resp.displayMessage ?? "关闭失败，请重试")
         }
 
-        // ⚠️ 这里**不再轮询等待**：closeOrder 已被受理，订单一定会关掉。
-        // Android 注释里专门纠正过这一点——再等 5 轮只会让用户白等最多 5 秒，
-        // 而 iOS 的界面退出就在 close 返回之后，等待会直接变成可感知的卡顿。
-        let running = await orderRunning(snCode: snCode)
-        if running != false {
-            AppLog.shared.w("关阀已受理，但服务端仍显示订单（running=\(String(describing: running))）")
-        }
+        // Android closeValve 同样以 closeOrder 受理为关闭判据。
+        // 不把仅供日志的额外查询放在返回前；金额由结算查询负责，结束身份负责过滤延迟状态。
+        AppLog.shared.i("关阀已受理：\(snCode)")
         return .closed
     }
 

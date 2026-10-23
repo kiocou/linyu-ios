@@ -60,5 +60,35 @@ enum DeviceControlRegression {
         if case .closed = await CloudShower.close(snCode: "A", orderNo: "order-A") {
             check(ApiClient.postPaths == ["/order/tcpDevice/closeOrder"], "服务端受理关阀后立即返回，不等待仅供日志使用的查询")
         } else { check(false, "服务端受理关阀后立即返回，不等待仅供日志使用的查询") }
+
+        ActiveOrderStore.clear()
+        ActiveOrderStore.upsert(a)
+        ActiveOrderStore.upsert(b)
+        ActiveOrderStore.finish("A")
+        check(!ActiveOrderStore.isRunning("A") && ActiveOrderStore.isRunning("B"), "结束 A 立即移除 A 并保留 B")
+        check(ActiveOrderStore.wasFinished(snCode: "A", orderNo: "order-A"), "已结束订单身份落盘，迟到查询不能恢复")
+        check(!ActiveOrderStore.wasFinished(snCode: "A", orderNo: "next-order"), "同设备的新订单不会被旧订单拦截")
+        check(!ActiveOrderStore.wasFinished(snCode: "B", orderNo: "order-A"), "结束记录按设备隔离")
+        ActiveOrderStore.confirmIdle("A")
+        check(ActiveOrderStore.wasFinished(snCode: "A", orderNo: "order-A"), "空闲确认后仍拒绝迟到的已知旧订单")
+        var noNumber = b; noNumber.orderNo = ""
+        ActiveOrderStore.upsert(noNumber)
+        ActiveOrderStore.finish("B")
+        check(ActiveOrderStore.wasFinished(snCode: "B", orderNo: "late-number"), "结束时订单号未知先拦截延迟补号")
+        ActiveOrderStore.confirmIdle("B")
+        check(!ActiveOrderStore.wasFinished(snCode: "B", orderNo: "next-B"), "确认空闲后解除未知订单号拦截")
+        ApiClient.postPaths = []
+        ApiClient.postResponse = #"{"success":false,"errorCode":307,"data":{"orderNo":"order-A","isOwner":true}}"#
+        if case .failed = await CloudShower.open(snCode: "A") {
+            check(!ApiClient.postPaths.contains("/order/tcpDevice/downRate/rateOrder"), "关阀后旧订单仍在服务器时不能恢复或重复开阀")
+        } else { check(false, "关阀后旧订单仍在服务器时不能恢复或重复开阀") }
+        ActiveOrderStore.clear()
+        check(!ActiveOrderStore.wasFinished(snCode: "A", orderNo: "order-A"), "退出账号清理结束订单身份")
+        ApiClient.postResponse = #"{"success":true,"data":null}"#
+        ApiClient.failPost = true
+        if case .unconfirmed = await CloudShower.close(snCode: "A", orderNo: "order-A") {
+            check(true, "断网关阀不冒充已关闭")
+        } else { check(false, "断网关阀不冒充已关闭") }
+        ApiClient.failPost = false
     }
 }

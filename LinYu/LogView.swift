@@ -6,8 +6,11 @@ struct LogView: View {
     @Environment(\.appColors) private var colors
     @State private var filter: Filter = .all
     @State private var searchText = ""
-    @State private var exportURL: URL?
-    @State private var showShare = false
+    private struct Export: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+    @State private var export: Export?
     @State private var exportFailed = false
 
     private enum Filter: String, CaseIterable {
@@ -96,8 +99,8 @@ struct LogView: View {
         }
         // 整屏不透明底（对照 Android `Surface(fillMaxSize, SolidSurface)`）
         .background(colors.solidSurface.ignoresSafeArea())
-        .sheet(isPresented: $showShare) {
-            if let url = exportURL { ShareSheet(items: [url]) }
+        .sheet(item: $export) { item in
+            ShareSheet(items: [item.url])
         }
     }
 
@@ -110,7 +113,6 @@ struct LogView: View {
     private func exportLog() {
         guard let url = log.exportFile() else { exportFailed = true; return }
         exportFailed = false
-        exportURL = url
-        showShare = true
+        export = Export(url: url)
     }
 }

@@ -38,6 +38,11 @@ struct ActiveOrderRecord: Codable, Equatable {
 enum ActiveOrderStore {
 
     private static let key = "activeOrders"
+    private static let finishedKey = "finishedOrderIdentities"
+    private struct FinishedOrder: Codable {
+        let snCode: String
+        let orderNo: String
+    }
     /// 递归锁：`record` 之类的方法内部会再调 `all()` / `save()`，普通锁会自锁死
     private static let lock = NSRecursiveLock()
 
@@ -102,9 +107,46 @@ enum ActiveOrderStore {
         update { $0.removeAll { $0.snCode == snCode } }
     }
 
+    /// 已确认关闭与普通删除不同：保留结束身份，拒绝服务端短暂返回的旧订单。
+    /// 与活跃记录用同一把锁，避免「刚移除又被查询加回」；退出账号时一起清理。
+    static func finish(_ snCode: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let record = find(snCode) {
+            var finished = loadFinished()
+            finished.removeAll { $0.snCode == snCode && $0.orderNo == record.orderNo }
+            finished.append(FinishedOrder(snCode: snCode, orderNo: record.orderNo))
+            if let data = try? JSONEncoder().encode(Array(finished.suffix(128))) {
+                UserDefaults.standard.set(data, forKey: finishedKey)
+            }
+        }
+        remove(snCode)
+    }
+
+    static func wasFinished(snCode: String, orderNo: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return loadFinished().contains {
+            $0.snCode == snCode && ($0.orderNo == orderNo || $0.orderNo.isEmpty || orderNo.isEmpty)
+        }
+    }
+
+    /// 确认空闲后，未知订单号的临时拦截可以解除；已知订单号继续去重。
+    static func confirmIdle(_ snCode: String) {
+        lock.lock(); defer { lock.unlock() }
+        let finished = loadFinished().filter { $0.snCode != snCode || !$0.orderNo.isEmpty }
+        if let data = try? JSONEncoder().encode(finished) {
+            UserDefaults.standard.set(data, forKey: finishedKey)
+        }
+    }
+
+    private static func loadFinished() -> [FinishedOrder] {
+        guard let data = UserDefaults.standard.data(forKey: finishedKey) else { return [] }
+        return (try? JSONDecoder().decode([FinishedOrder].self, from: data)) ?? []
+    }
+
     static func clear() {
         lock.lock(); defer { lock.unlock() }
         UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: finishedKey)
     }
 
     // MARK: - 内部

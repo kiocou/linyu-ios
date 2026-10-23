@@ -18,6 +18,7 @@ struct UserDialogs: View {
     @Environment(\.appColors) private var colors
     @ObservedObject var scanner: BLEScanner
     let onRoomSelected: (String) -> Void
+    var onUseCodeRedeemed: () -> Void = {}
     private var rooms: [String] {
         Array(Set(scanner.devices.compactMap { device in
             guard let sn = device.parsedSnCode, let name = store.deviceInfos[sn]?.deviceName else { return nil }
@@ -31,7 +32,7 @@ struct UserDialogs: View {
         case .password:
             ChangePasswordDialog(currentPhone: Session.shared.telephone) { presentation.dialog = nil }
         case .useCode:
-            UseCodeRedeemView(onDismiss: { presentation.dialog = nil })
+            UseCodeRedeemView(onDismiss: { presentation.dialog = nil }, onRedeemed: onUseCodeRedeemed)
         case .room:
             DialogScrim(onTapOutside: { presentation.dialog = nil }) {
                 AlertCard(title: "选择设备位置", titleAlign: .leading) {

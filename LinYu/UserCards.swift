@@ -134,35 +134,43 @@ struct UseCodeCardView: View {
     @Environment(\.appColors) private var colors
     @State private var redeemExpanded = false
     @State private var errorText: String?
+    @State private var localCodeOn = false
     private var code: String { store.useCode?.useCode ?? "" }
     var body: some View {
         BaseCard {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text("使用码").font(.system(size: 13))
                     Spacer()
                     Text("后三位为手机号后三位").font(.system(size: 11))
                 }.foregroundStyle(colors.textSecondary)
+                Spacer().frame(height: 4)
                 Group {
                     if !code.isEmpty {
                         (Text(String(code.dropLast(3))).foregroundColor(colors.textPrimary)
                          + Text(String(code.suffix(3))).foregroundColor(colors.accent))
                     } else {
                         Text(store.useCodeLoaded ? "尚未领取" : "加载中...")
+                            .foregroundColor(store.useCodeLoaded ? colors.textSecondary : colors.textPrimary)
                     }
                 }.font(.system(size: 28, weight: .black)).tracking(6)
-                Toggle(store.useCode?.useCodeStatus == 1 ? "使用码已开启" : "使用码已关闭",
-                       isOn: Binding(get: { store.useCode?.useCodeStatus == 1 }, set: { enabled in
+                Spacer().frame(height: 4)
+                Toggle(localCodeOn ? "使用码已开启" : "使用码已关闭",
+                       isOn: Binding(get: { localCodeOn }, set: { enabled in
+                    localCodeOn = enabled
                     Task {
                         do { try await store.setUseCodeEnabled(enabled) }
-                        catch { errorText = error.localizedDescription }
+                        catch { localCodeOn = !enabled; errorText = "操作失败，请重试" }
                     }
                 }))
                 .font(.system(size: 12)).tint(colors.accent)
-                .disabled(!store.useCodeLoaded || code.isEmpty || store.changingUseCodeStatus)
+                .foregroundStyle(colors.textSecondary)
+                .frame(minHeight: 48)
+                .disabled(store.changingUseCodeStatus)
                 Text("在热水器物理键盘上输入此码").font(.system(size: 12))
                     .foregroundStyle(colors.textSecondary)
-                Divider().padding(.top, 12)
+                Spacer().frame(height: 12)
+                Rectangle().fill(colors.border).frame(height: 1)
                 CollapsibleHeader(title: code.isEmpty ? "领取使用码" : "重新领取", expanded: redeemExpanded) {
                     redeemExpanded.toggle()
                 }
@@ -170,13 +178,20 @@ struct UseCodeCardView: View {
                     if store.useCode?.resetAvailability == 0, let warning = store.useCode?.resetAvailabilityWarMark {
                         Text(warning).font(.system(size: 11)).foregroundStyle(colors.textSecondary)
                             .frame(maxWidth: .infinity)
+                        Spacer().frame(height: 6)
                     }
-                    Button("领取") { presentation.dialog = .useCode }
-                        .frame(maxWidth: .infinity)
-                        .buttonStyle(AccentButtonStyle(colors: colors, radius: 12, height: 44))
-                        .disabled(!store.useCodeLoaded)
+                    Button { presentation.dialog = .useCode } label: {
+                        Text(code.isEmpty ? "领取使用码" : "重新领取")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AccentButtonStyle(colors: colors, radius: 12, height: 40))
+                    .padding(.vertical, 4)
                 }
             }
+        }
+        .onAppear { localCodeOn = store.useCode?.useCodeStatus == 1 }
+        .onChange(of: store.useCode?.useCodeStatus) { value in
+            if let value { localCodeOn = value == 1 }
         }
         .task { await store.loadUseCode() }
         .alert("操作失败", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {

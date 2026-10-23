@@ -271,14 +271,14 @@ struct MainScreenView: View {
                         .padding(.vertical, 2)
                         .background(colors.activeBg)
                         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    Text(isCurrent ? "点击回到使用页" : "点击恢复订单")
+                    Text("点击恢复订单")
                         .font(.system(size: 12))
                         .foregroundStyle(colors.textSecondary)
                 }
             }
             Spacer(minLength: 0)
 
-            Button(isCurrent ? "继续" : "恢复") {
+            Button("恢复") {
                 if isCurrent {
                     onResumeOrder()
                 } else {
@@ -288,7 +288,8 @@ struct MainScreenView: View {
             .buttonStyle(AccentButtonStyle(colors: colors))
         }
         .padding(16)
-        .linyuCard(colors)
+        .background(colors.activeBg)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(colors.border, lineWidth: 0.8)
@@ -410,7 +411,7 @@ struct MainScreenView: View {
         let sigLabel = "信号强度: \(d.rssi) dBm"
 
         return Button {
-            Task { await openDetail(sn) }
+            openDetail(sn)
         } label: {
             HStack(spacing: 14) {
                 DeviceGlyph(
@@ -470,17 +471,22 @@ struct MainScreenView: View {
         await flow.refreshDeviceStatus(sn)
     }
 
-    private func openDetail(_ sn: String) async {
-        if store.deviceInfos[sn] == nil {
-            await resolveDevice(sn)
-        }
-        guard let info = store.deviceInfos[sn] else {
-            flow.toast = "查不到这台设备的信息（可能不是本校设备）"
+    private func openDetail(_ sn: String) {
+        // Android fetchDeviceInfo：缓存命中立即展示，查询占用不挡住点击反馈。
+        if let info = store.deviceInfos[sn] {
+            detailDevice = info
+            Task { await flow.refreshDeviceStatus(sn) }
             return
         }
-        // 弹详情前先把占用状态问清楚（Android `fetchDeviceInfo` 同）
-        await flow.refreshDeviceStatus(sn)
-        detailDevice = info
+        Task {
+            await store.deviceInfo(sn)
+            guard let info = store.deviceInfos[sn] else {
+                flow.toast = "获取设备信息失败，请稍后重试"
+                return
+            }
+            detailDevice = info
+            await flow.refreshDeviceStatus(sn)
+        }
     }
 
     /// 这台设备有没有活跃订单。
@@ -490,7 +496,7 @@ struct MainScreenView: View {
     private func isDeviceActive(_ device: DeviceInfo) -> Bool {
         let sn = device.snCode ?? ""
         guard !sn.isEmpty else { return false }
-        return flow.restoredOrders.contains { $0.snCode == sn }
+        return flow.restoredOrders.contains { $0.snCode == sn } || !flow.isOwnerFor(sn)
     }
 
     /// 详情弹窗里点了「开始使用」

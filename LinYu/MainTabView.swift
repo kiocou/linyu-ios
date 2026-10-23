@@ -88,7 +88,7 @@ struct MainTabView: View {
                             slideForward = newTab > tab
                             withAnimation(Self.pageAnimation) { tab = newTab }
                         }
-                    ), colors: colors)
+                    ), colors: backgrounds.colors(colors))
                         .padding(.bottom, 22)
                         .padding(.horizontal, 24)
                         .transition(.identity)
@@ -143,7 +143,11 @@ struct MainTabView: View {
             }
         }
         .overlay { flowDialogs }
-        .overlay { UserDialogs(scanner: scanner) { flow.toast = "已绑定寝室：\($0)" } }
+        .overlay {
+            UserDialogs(scanner: scanner,
+                        onRoomSelected: { flow.toast = "已绑定寝室：\($0)" },
+                        onUseCodeRedeemed: { flow.toast = "使用码已更新" })
+        }
         .environmentObject(store)
         .environmentObject(userPresentation)
         .environment(\.appColors, backgrounds.colors(colors))

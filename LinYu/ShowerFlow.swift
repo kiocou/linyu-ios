@@ -133,6 +133,8 @@ final class ShowerFlow: ObservableObject {
     private var pendingAutoClose = false
     private var controlGate = DeviceControlGate()
     private var connectedBleSn: String?
+    /// 设备本地状态变化后，之前发出的占用查询不再有写回资格。
+    private var deviceRevisions: [String: UInt64] = [:]
     var controlBusy: Bool { controlGate.isBusy }
 
     private func beginControl() -> UUID? {
@@ -157,6 +159,7 @@ final class ShowerFlow: ObservableObject {
     /// ⚠️ 顺序有讲究：**先把计时写进去，再写订单**。反过来的话会出现
     /// 「订单在、计时为 0」的中间态，卡片会显示 00:00 并从零开始走秒。
     private func persist(_ order: ActiveOrder) {
+        deviceRevisions[order.snCode, default: 0] &+= 1
         if Prefs.startedAt(order.snCode) <= 0 {
             Prefs.setStartedAt(order.snCode, Int64(Date().timeIntervalSince1970 * 1000))
         }
@@ -197,8 +200,14 @@ final class ShowerFlow: ObservableObject {
 
     /// 清掉这台设备的本地使用状态
     private func clearDeviceState(_ snCode: String) {
+        deviceRevisions[snCode, default: 0] &+= 1
+        // 不 cancel：此处也可能由监控任务自身调用，它后面仍须完成结算。
+        // 先撤销身份，旧任务返回时不能再次处理或移除新的监控任务。
+        watchTokens[snCode] = nil
+        watchTasks[snCode] = nil
+        deviceOwner[snCode] = true
         AppNotifications.shared.clearInUse(snCode: snCode)
-        ActiveOrderStore.remove(snCode)
+        ActiveOrderStore.finish(snCode)
         Prefs.setStartedAt(snCode, 0)
         Prefs.clearAutoDiscon(snCode)
         restoredOrders = ActiveOrderStore.all()
@@ -609,6 +618,7 @@ final class ShowerFlow: ObservableObject {
         case .closed:
             // 水已关 → 立刻退出使用页
             activeOrder = nil
+            toast = "热水器已关闭"
             Task { await settleCloud(settledOrder, elapsed: elapsed, automatic: automatic) }
         case let .unconfirmed(msg):
             // 没有证据 = 水可能还在流。留在页面让用户重试
@@ -653,6 +663,7 @@ final class ShowerFlow: ObservableObject {
         // 水已关：立刻退出使用页，剩下的结算在后台做
         activeOrder = nil
         didFireAutoClose = false
+        toast = "热水器已关闭"
         // 界面已退出使用页，但控制锁继续覆盖重连、采集、上传、写回。
         // 新设备不能在这段时间复用同一个 BleSession。
         await settleBle(order, elapsed: elapsed, autoClosed: automatic)
@@ -667,7 +678,6 @@ final class ShowerFlow: ObservableObject {
     /// 断开重连后再采集才被接受。原因是重连后设备才给出新的 `randomNumber`，
     /// 而上传签名用的正是它。
     private func settleBle(_ order: ActiveOrder, elapsed: Int, autoClosed: Bool = false) async {
-        toast = "设备已关闭，正在结算…"
 
         defer {
             ble.disconnect()
@@ -821,7 +831,6 @@ final class ShowerFlow: ObservableObject {
 
     private func settleCloud(_ order: ActiveOrder, elapsed: Int, automatic: Bool = false) async {
         let accountKey = AppNotifications.accountKey
-        toast = "设备已关闭，正在结算…"
         // 与 Android 的 `SettlementEngine.settleAmount` 完全同一条路：
         // 直答接口 → 零确认 → 账单列表回退 → 登记待对账
         let yuan = await SettlementEngine.settleAmount(
@@ -1147,6 +1156,7 @@ final class ShowerFlow: ObservableObject {
         switch await CloudShower.close(snCode: target.snCode, orderNo: orderNo) {
         case .closed:
             markFinished(target.snCode)
+            toast = "热水器已关闭"
             let accountKey = AppNotifications.accountKey
             Task {
                 let amount = await SettlementEngine.settleAmount(orderNo: orderNo,
@@ -1338,12 +1348,23 @@ final class ShowerFlow: ObservableObject {
     /// 2. **使用码启动检测**：用物理键盘使用码开机后，扫描到时这里会发现「已经有订单」，
     ///    于是把它记进活跃订单 —— 首页立刻出现「使用中的设备」，用户能直接去关阀
     func refreshDeviceStatus(_ snCode: String) async {
-        guard !snCode.isEmpty else { return }
+        guard !snCode.isEmpty, !controlGate.isBusy else { return }
+        let revision = deviceRevisions[snCode, default: 0]
+        let accountKey = AppNotifications.accountKey
         guard let q = try? await CloudShower.queryUsing(snCode: snCode) else { return }
+        guard !controlGate.isBusy, deviceRevisions[snCode, default: 0] == revision,
+              Session.shared.isLoggedIn, AppNotifications.accountKey == accountKey else { return }
 
         let hasOrder = q.errorCode == 307 || (q.success && q.data?.orderNo != nil)
         guard hasOrder else {
+            guard q.success else { return }
+            ActiveOrderStore.confirmIdle(snCode)
             deviceOwner[snCode] = true
+            return
+        }
+
+        guard !ActiveOrderStore.wasFinished(snCode: snCode, orderNo: q.data?.orderNo ?? "") else {
+            AppLog.shared.i("忽略已结束订单的延迟状态：\(snCode)")
             return
         }
 
@@ -1412,6 +1433,7 @@ final class ShowerFlow: ObservableObject {
         openingText = ""
         currentPeripheral = nil
         currentCentral = nil
+        deviceRevisions.removeAll()
         stopOrderWatch()
         restoredOrders = ActiveOrderStore.all()
     }
