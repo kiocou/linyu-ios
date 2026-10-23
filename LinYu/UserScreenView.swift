@@ -86,6 +86,8 @@ struct UserScreenView: View {
     @Environment(\.appColors) private var colors
     @EnvironmentObject private var store: AppDataStore
     @EnvironmentObject private var presentation: UserPresentation
+    /// 主题切换的圆形揭示
+    @EnvironmentObject private var reveal: ThemeReveal
 
     @ObservedObject var flow: ShowerFlow
     @ObservedObject var scanner: BLEScanner
@@ -98,6 +100,8 @@ struct UserScreenView: View {
     /// 退出登录确认（对照 Android `MainActivity.showLogoutConfirm`）
     @State private var showLogoutConfirm = false
     @State private var editMode = false
+    /// 主题按钮在屏幕坐标里的位置（揭示动画的原点）
+    @State private var themeAnchor: CGRect = .zero
 
     @State private var profileOrder: [UserCardType]
     @State private var settingsOrder: [UserCardType]
@@ -275,11 +279,20 @@ struct UserScreenView: View {
 
             if !showBack {
                 Button {
-                    isDark.toggle()
+                    toggleTheme()
                 } label: {
                     Text(isDark ? "🌙" : "☀️")
                         .font(.system(size: 20))
                         .frame(width: 40, height: 40)
+                        // 记录按钮在**屏幕坐标**里的位置：揭示动画要以它为中心扩散
+                        .background(
+                            GeometryReader { g in
+                                Color.clear.preference(
+                                    key: ThemeAnchorKey.self,
+                                    value: g.frame(in: .global)
+                                )
+                            }
+                        )
                 }
                 .buttonStyle(InstantButtonStyle())
                 .accessibilityLabel(isDark ? "切换浅色模式" : "切换深色模式")
@@ -300,6 +313,25 @@ struct UserScreenView: View {
         .frame(height: PageLayout.titleHeight)
         .frame(height: PageLayout.headerHeight, alignment: .top)
         .padding(.bottom, 16)
+        .onPreferenceChange(ThemeAnchorKey.self) { themeAnchor = $0 }
+    }
+
+    /// 切主题：有按钮位置就走圆形揭示，拿不到就退化成直接切（绝不因为动画失败而不切）
+    private func toggleTheme() {
+        let screen = UIScreen.main.bounds.size
+        guard themeAnchor != .zero else {
+            isDark.toggle()
+            return
+        }
+        let origin = CGPoint(x: themeAnchor.midX, y: themeAnchor.midY)
+        // ⚠️ coverColor 必须是**切换前**的底色：遮罩填的就是它
+        reveal.toggle(
+            origin: origin,
+            coverColor: colors.background,
+            screen: screen
+        ) {
+            isDark.toggle()
+        }
     }
 
     // MARK: - 卡片列表

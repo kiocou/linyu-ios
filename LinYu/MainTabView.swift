@@ -26,6 +26,8 @@ struct MainTabView: View {
     /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
     @State private var settingsVisible = false
     @State private var showerMinimized = false
+    /// 翻页方向（旧 tab < 新 tab 时向右滑）—— 对照 Android AnimatedContent 的 forward 判断
+    @State private var slideForward = true
     /// 从首页改完设置（寝室筛选等）要让首页刷新，用一个计数器触发
     @State private var refreshToken = 0
 
@@ -54,25 +56,40 @@ struct MainTabView: View {
                 )
                 .transition(.identity)
             } else {
-                Group {
-                    switch tab {
-                    case 0:
-                        MainScreenView(scanner: scanner, store: store, flow: flow,
-                                       onResumeOrder: { showerMinimized = false })
-                            .id(refreshToken)
-                    case 1:
-                        WalletScreenView(store: store, flow: flow, deduct: deduct)
-                    default:
-                        UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
+                ZStack {
+                    Group {
+                        switch tab {
+                        case 0:
+                            MainScreenView(scanner: scanner, store: store, flow: flow,
+                                           onResumeOrder: { showerMinimized = false })
+                                .id(refreshToken)
+                        case 1:
+                            WalletScreenView(store: store, flow: flow, deduct: deduct)
+                        default:
+                            UserScreenView(flow: flow, scanner: scanner, settingsVisible: $settingsVisible)
+                        }
                     }
+                    // ⚠️ `.id(tab)` 必不可少：SwiftUI 靠它把「换页」识别成
+                    // 一次插入 + 一次移除，才会走下面的 transition。
+                    .id(tab)
+                    .transition(pageTransition)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.container, edges: .bottom)
-                // 页面直接切换，不做交叉渐隐。
-                .transition(.identity)
+                // 整屏左右滑移时不要画到外面去（否则能看到邻页边缘）
+                .clipped()
 
                 if !settingsVisible {
-                    PillNavBar(currentTab: $tab, colors: colors)
+                    // 拦截选中动作：先定方向再带弹簧动画改 tab，
+                    // 这样插入/移除都拿到同一个方向（对照 Android 的 forward 判断）
+                    PillNavBar(currentTab: Binding(
+                        get: { tab },
+                        set: { newTab in
+                            guard newTab != tab else { return }
+                            slideForward = newTab > tab
+                            withAnimation(Self.pageAnimation) { tab = newTab }
+                        }
+                    ), colors: colors)
                         .padding(.bottom, 22)
                         .padding(.horizontal, 24)
                         .transition(.identity)
@@ -190,8 +207,21 @@ struct MainTabView: View {
         await store.reload()
     }
 
+    /// 与 Android `AnimatedContent` 同一套参数：
+    /// `spring(dampingRatio = 0.78, stiffness = 420)` → SwiftUI 的阻尼系数 ≈ 2×0.78×√420
+    static let pageAnimation: Animation = .interpolatingSpring(stiffness: 420, damping: 32)
+
+    /// 左右视差滑移 + 淡入淡出（Android：slideIn/OutHorizontally + fadeIn/Out）
+    private var pageTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: slideForward ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: slideForward ? .leading : .trailing).combined(with: .opacity)
+        )
+    }
+
     private func minimizeShower() {
-        tab = 0
+        slideForward = false
+        withAnimation(Self.pageAnimation) { tab = 0 }
         settingsVisible = false
         showerMinimized = true
         flow.toast = "已返回主页，设备仍在运行"

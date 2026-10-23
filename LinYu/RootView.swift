@@ -7,6 +7,8 @@ import SwiftUI
 struct RootView: View {
     @ObservedObject private var session = Session.shared
     @AppStorage("linyu.darkMode") private var isDark = false
+    /// 圆形揭示主题切换（对照 Android CircularRevealTheme）
+    @StateObject private var reveal = ThemeReveal()
 
     private var colors: AppColorSet { isDark ? .dark : .light }
 
@@ -34,6 +36,19 @@ struct RootView: View {
         } message: {
             Text(session.kickedReason ?? "账号已在其他设备登录，请重新登录。")
         }
+        // 遮罩盖在**所有内容之上**（包括弹窗），否则过渡时会看到底层先变色
+        .overlay {
+            GeometryReader { geo in
+                if let animation = reveal.animation {
+                    ThemeRevealOverlay(
+                        animation: animation,
+                        progress: reveal.progress,
+                        screen: geo.size
+                    )
+                }
+            }
+        }
+        .environmentObject(reveal)
         .environment(\.appColors, colors)
         .environment(\.isDarkMode, isDark)
         .preferredColorScheme(isDark ? .dark : .light)
