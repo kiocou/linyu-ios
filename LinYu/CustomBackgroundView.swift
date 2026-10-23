@@ -218,6 +218,7 @@ struct CustomBackgroundView: View {
                                 .font(.system(size: 20))
                                 .foregroundStyle(colors.textPrimary)
                                 .frame(width: 48, height: 48)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("返回")
@@ -370,6 +371,7 @@ struct CustomBackgroundView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8)
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(scope == value ? .isSelected : [])
@@ -401,6 +403,9 @@ struct CustomBackgroundView: View {
             }.frame(width: geometry.size.width, height: geometry.size.height)
         }
         .frame(height: 200).clipShape(RoundedRectangle(cornerRadius: 18))
+        // 裁剪只限制绘制；放大的图片仍可能在预览外参与命中测试。
+        // 整块预览仅展示，必须让触摸穿过，避免挡住返回和范围切换。
+        .allowsHitTesting(false)
     }
 
     private func adjustment(_ title: String, keyPath: WritableKeyPath<BackgroundOptions, Double>, range: ClosedRange<Double>, percentage: Bool) -> some View {
