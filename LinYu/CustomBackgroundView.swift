@@ -173,100 +173,171 @@ struct AppBackground: View {
     }
 }
 
+/// 自定义背景设置页（全屏）—— 逐条对照 Android 的 `CustomBackgroundScreen.kt`。
+///
+/// 结构（自上而下，与 Kotlin 版一致）：
+/// ```
+/// [←]  自定义背景
+/// [ 主页 ][ 使用页 ]
+/// 应用于：首页 / 账单 / 我的
+/// ┌ 预览（200pt）─────────────┐
+/// │ [示例卡片]                │
+/// └──────────────────────────┘
+/// [ 选择背景图片 / 更换背景图片 ]
+/// 主题色 ●  已根据图片自动提取
+/// 透明度 ————————○———  70%
+/// 模糊度 ————————○———  0
+/// 亮度   ————————○———  100%
+/// [ 恢复默认背景（仅当前页面） ]
+/// ```
+///
+/// ⚠️ 不包含任何深色/浅色模式控件，与主题切换完全解耦（Android 注释也强调了这点）。
 struct CustomBackgroundView: View {
     let onBack: () -> Void
     @Environment(\.appColors) private var colors
     @ObservedObject private var backgrounds = BackgroundStore.shared
-    /// 上次看的是哪一套（主页 / 使用页）—— 对照 Android：退出重进不再复位到「主页」
+    /// 上次看的是哪一套（主页 / 使用页）—— 对照 Android `PrefsHelper.backgroundScope`
     @State private var scope: BackgroundScope = BackgroundScope(rawValue: Prefs.backgroundScope) ?? .home
     @State private var selection: PhotosPickerItem?
     @State private var loading = false
+    /// 恢复默认的确认弹窗 —— 用应用内居中卡片，**不用系统 `.alert`**
+    /// （Android 用的是 Material3 `AlertDialog`，样式与这里一致）
     @State private var resetConfirm = false
     @State private var errorText: String?
+
     var body: some View {
-        ScrollView {
+        ZStack {
+            colors.solidSurface.ignoresSafeArea()
+
+            ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // 顶栏：IconButton(ArrowBack) + 标题
                     HStack(spacing: 0) {
-                        Image(systemName: "arrow.left")
-                            .font(.system(size: 20))
-                            .frame(width: 48, height: 48)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                AppLog.shared.i("背景装扮：点击返回")
-                                onBack()
-                            }
-                            .accessibilityLabel("返回")
-                            .accessibilityAddTraits(.isButton)
-                        Text("自定义背景").font(.system(size: 20, weight: .bold))
+                        Button(action: onBack) {
+                            Image(systemName: "arrow.left")
+                                .font(.system(size: 20))
+                                .foregroundStyle(colors.textPrimary)
+                                .frame(width: 48, height: 48)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("返回")
+
+                        Text("自定义背景")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(colors.textPrimary)
                     }
-                    .foregroundStyle(colors.textPrimary)
                     .padding(.bottom, 12)
+
+                    // 页面切换：主页 / 使用页（两套独立背景）
                     HStack(spacing: 10) {
                         scopeChip("主页", value: .home)
                         scopeChip("使用页", value: .shower)
                     }
                     .onChange(of: scope) { Prefs.backgroundScope = $0.rawValue }
+
                     Text(scope == .home ? "应用于：首页 / 账单 / 我的" : "应用于：洗澡中的使用页")
-                        .font(.system(size: 12)).foregroundStyle(colors.textSecondary)
-                        .padding(.top, 6).padding(.bottom, 14)
+                        .font(.system(size: 12))
+                        .foregroundStyle(colors.textSecondary)
+                        .padding(.top, 6)
+                        .padding(.bottom, 14)
+
                     preview
                         .padding(.bottom, 16)
+
+                    // 选择 / 更换图片（存到当前选中的那套）
                     PhotosPicker(selection: $selection, matching: .images) {
                         Text(backgrounds.image(scope) == nil ? "选择背景图片" : "更换背景图片")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
                             .background(colors.accent, in: RoundedRectangle(cornerRadius: 14))
                     }
-                    .buttonStyle(.plain).disabled(loading)
+                    .buttonStyle(.plain)
+                    .disabled(loading)
+
+                    // 效果调节（有背景时才显示）
                     if backgrounds.image(scope) != nil {
+                        // 自动提取的主题色
                         HStack(spacing: 0) {
-                            Text("主题色").font(.system(size: 13))
-                            Circle().fill(backgrounds.themeColor(scope) ?? colors.accent)
-                                .frame(width: 20, height: 20).padding(.leading, 10).padding(.trailing, 8)
+                            Text("主题色")
+                                .font(.system(size: 13))
+                                .foregroundStyle(colors.textSecondary)
+                            Circle()
+                                .fill(backgrounds.themeColor(scope) ?? colors.accent)
+                                .frame(width: 20, height: 20)
+                                .padding(.leading, 10)
+                                .padding(.trailing, 8)
                                 .accessibilityLabel("图片主题色")
                             Text(backgrounds.themeColor(scope) == nil ? "使用默认强调色" : "已根据图片自动提取")
                                 .font(.system(size: 12))
+                                .foregroundStyle(colors.textSecondary)
                         }
-                        .foregroundStyle(colors.textSecondary)
-                        .padding(.top, 20).padding(.bottom, 8)
-                        adjustment("透明度", keyPath: \.opacity, range: 0.2...1, percentage: true)
-                        adjustment("模糊度", keyPath: \.blur, range: 0...20, percentage: false)
-                        adjustment("亮度", keyPath: \.brightness, range: 0.4...1.5, percentage: true)
+                        .padding(.top, 20)
+                        .padding(.bottom, 8)
+
+                        adjustment("透明度", keyPath: \.opacity, range: 0.2 ... 1, percentage: true)
+                        adjustment("模糊度", keyPath: \.blur, range: 0 ... 20, percentage: false)
+                        adjustment("亮度", keyPath: \.brightness, range: 0.4 ... 1.5, percentage: true)
                     }
+
+                    // 恢复默认（OutlinedButton）
                     Button { resetConfirm = true } label: {
                         Text("恢复默认背景（仅当前页面）")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(colors.danger)
-                            .frame(maxWidth: .infinity).padding(.vertical, 12)
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(colors.border, lineWidth: 1))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(colors.danger.opacity(0.5), lineWidth: 1)
+                            )
                     }
-                    .buttonStyle(.plain).disabled(loading).padding(.top, 24)
-                    if loading { ProgressView() }
-                    if let errorText { Text(errorText).foregroundStyle(.red) }
-                }.padding(20).padding(.bottom, 60)
-            }
-            .background(colors.solidSurface.ignoresSafeArea())
-            // 安卓 `verticalScroll` 不显示滚动条；iOS 的指示器常驻在右侧，这里关掉
-            .scrollIndicators(.hidden)
-            .alert("恢复默认背景？", isPresented: $resetConfirm) {
-                Button("取消", role: .cancel) {}
-                Button("恢复默认", role: .destructive) {
-                    do { try backgrounds.reset(scope) } catch { errorText = error.localizedDescription }
+                    .buttonStyle(.plain)
+                    .disabled(loading)
+                    .padding(.top, 24)
+
+                    if loading { ProgressView().padding(.top, 12) }
+                    if let errorText {
+                        Text(errorText).font(.system(size: 12)).foregroundStyle(.red).padding(.top, 8)
+                    }
+
+                    // Android: Spacer(60.dp)
+                    Color.clear.frame(height: 60)
                 }
-            } message: { Text("这将移除当前页面的自定义背景及相关效果。\n不会影响深色 / 浅色模式。") }
-        // 兜底返回：左边缘右滑（本 App 其它页面也是这个手势，对应安卓的返回键/手势）。
-        // 万一某个机型的按钮热区异常，用户也不会被困在这一页里。
+                .padding(20)
+            }
+            // 安卓 `verticalScroll` 不显示滚动条
+            .scrollIndicators(.hidden)
+
+            // 恢复默认确认（对照 Android 的 Material3 AlertDialog）
+            if resetConfirm {
+                DialogScrim(onTapOutside: { resetConfirm = false }) {
+                    AlertCard(title: "恢复默认背景？", titleAlign: .leading) {
+                        Text("这将移除当前页面的自定义背景及相关效果。\n不会影响深色 / 浅色模式。")
+                            .font(.system(size: 14))
+                            .foregroundStyle(colors.textSecondary)
+                            .lineSpacing(4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } actions: {
+                        DialogTextButton(title: "取消", color: colors.accent) { resetConfirm = false }
+                        DialogFilledButton(title: "恢复默认", color: colors.danger) {
+                            resetConfirm = false
+                            do { try backgrounds.reset(scope) } catch { errorText = error.localizedDescription }
+                        }
+                    }
+                }
+            }
+        }
+        // 安卓 `BackHandler(onBack = onDismiss)` 的等价物：左边缘右滑返回
         .simultaneousGesture(
             DragGesture(minimumDistance: 30).onEnded { value in
                 guard value.startLocation.x < 30,
                       value.translation.width > 80,
                       abs(value.translation.height) < 60 else { return }
-                AppLog.shared.i("背景装扮：左边缘右滑返回")
                 onBack()
             }
         )
-        .onAppear { AppLog.shared.i("背景装扮页已显示（modal）") }
         .onChange(of: selection) { item in
             guard let item else { return }
             let destination = scope
@@ -275,26 +346,33 @@ struct CustomBackgroundView: View {
             Task {
                 defer { loading = false; selection = nil }
                 do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadCorruptFile) }
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
                     try backgrounds.save(data, scope: destination)
-                } catch { errorText = "图片加载失败：\(error.localizedDescription)" }
+                } catch {
+                    errorText = "图片加载失败：\(error.localizedDescription)"
+                }
             }
         }
     }
+
+    /// 主页 / 使用页 切换 —— 对照 Android `ScopeChip`（Surface(onClick)）
     private func scopeChip(_ title: String, value: BackgroundScope) -> some View {
-        Text(title).font(.system(size: 14, weight: .medium))
-            .foregroundStyle(scope == value ? Color.white : colors.textPrimary)
-            .frame(maxWidth: .infinity).padding(.vertical, 10)
-            .background(scope == value ? colors.accent : colors.card, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8))
-            // 整块胶囊都是热区（不只是文字那几像素）
-            .contentShape(RoundedRectangle(cornerRadius: 12))
-            .onTapGesture {
-                AppLog.shared.i("背景装扮：切换到 \(value.rawValue)")
-                scope = value
-            }
-            .accessibilityAddTraits(scope == value ? .isSelected : [])
-            .accessibilityAddTraits(.isButton)
+        Button { scope = value } label: {
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(scope == value ? Color.white : colors.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(scope == value ? colors.accent : colors.card,
+                            in: RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(scope == value ? .isSelected : [])
     }
 
     private var preview: some View {
