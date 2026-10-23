@@ -2,9 +2,13 @@
 
 淋浴 (LinYu) 的 iOS 客户端。Android 版在 [yehu-imei/linyu](https://github.com/yehu-imei/linyu)。
 
-> **当前状态：空壳验证阶段。**
-> 这个仓库现在只做一件事——验证「云端构建 → 自签安装」这条链路能走通。
-> 还没有任何业务功能，页面只有一个显示构建信息的占位页。
+> **当前状态：功能对齐阶段。**
+> 业务功能已按 Android 3.1.0 逐条移植（登录 / 扫描 / 云端与蓝牙开关阀 / 结算 /
+> 账单与代扣 / 使用码 / 挤号检测 / MQTT 实时消费 / 背景装扮 / 日志 / 更新检查）。
+> 逐条对照见 [`docs/安卓对齐清单.md`](docs/安卓对齐清单.md)，那里同时列了
+> iOS 的系统能力边界（后台监控、常驻通知、小组件、应用内安装）。
+>
+> 剩余：WidgetKit 小组件（暂缓）+ 真机验收。
 
 ---
 
@@ -58,10 +62,26 @@ open LinYu.xcodeproj
 ```
 .
 ├── project.yml                  # XcodeGen 工程描述
+├── docs/安卓对齐清单.md          # 与 Android 的逐条对照 + 系统边界
 ├── LinYu/
 │   ├── LinYuApp.swift           # App 入口
-│   └── ContentView.swift        # 占位页（显示版本与设备信息）
-└── .github/workflows/ios.yml    # 云端构建
+│   ├── RootView.swift           # 登录态分流 + 主题注入
+│   ├── MainTabView.swift        # 三页容器（视差切换 / 弹窗 / Toast）
+│   ├── MainScreenView.swift     # 首页（设备列表 / 使用中订单）
+│   ├── WalletScreenView.swift   # 钱包（余额 / 趋势 / 账单 / 代扣）
+│   ├── UserScreenView.swift     # 我的（卡片排序 / 设置 / 退出）
+│   ├── ShowerFlow.swift         # 开阀/关阀/结算编排（对应 MainViewModel）
+│   ├── CloudShower.swift        # 云端 4G 通道
+│   ├── BleSession.swift         # 蓝牙水表通道（GATT + 帧协议）
+│   ├── SettlementEngine.swift   # 结算金额查询与回退
+│   ├── ActiveOrderStore.swift   # 活跃订单持久化
+│   ├── PendingSettlement.swift  # 待对账 + 7 天复核
+│   ├── DeductService.swift      # 未支付账单 + 手动代扣
+│   ├── MqttClient.swift         # MQTT 实时消费（手写 3.1.1）
+│   ├── KickWatch.swift          # 挤号检测（25s 心跳）
+│   └── ...                      # 其余 UI / 工具（命名与 Android 文件对应）
+├── Tests/                       # CI 里直接 swiftc 编译运行的回归检查
+└── .github/workflows/ios.yml    # 云端构建（回归检查 → Archive → ipa）
 ```
 
 `LinYu/Info.plist` 由 XcodeGen 根据 `project.yml` 的 `info.properties` **自动生成**，不要手写。

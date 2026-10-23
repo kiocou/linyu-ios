@@ -2,13 +2,22 @@ import Foundation
 
 enum ApiError: Error { case transport(String); case unauthorized(status: Int) }
 struct EmptyData: Decodable {}
-enum Prefs { static var campusBalance = ""; static var walletBalance = "" }
+enum Prefs {
+    static var campusBalance = ""
+    static var walletBalance = ""
+    static var recordedConsume: [String: Double] = [:]
+    static func recordConsume(_ snCode: String, amount: Double) { recordedConsume[snCode] = amount }
+}
 enum BalanceEstimator { static func billTimeMs(_ value: String) -> Double { 0 } }
 extension DeviceInfo { static func formatDeviceName(_ value: String) -> String { value } }
 final class AppLog {
     static let shared = AppLog()
     func i(_ text: String) {}
+    func i(_ text: String, _ detail: String?) {}
     func w(_ text: String) {}
+    func w(_ text: String, _ detail: String?) {}
+    func e(_ text: String) {}
+    func e(_ text: String, _ detail: String?) {}
 }
 enum ApiClient {
     static var failBills = false

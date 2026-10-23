@@ -49,6 +49,7 @@ struct DataStoreRegression {
         ApiClient.failingMonth = nil
 
         SettlementRegression.run(check: check)
+        CoreLogicRegression.run(check: check)
 
         if !failures.isEmpty { fatalError("Regression failures: \(failures.joined(separator: ", "))") }
     }

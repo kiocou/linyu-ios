@@ -28,8 +28,10 @@ jobs:
         run: |
           swiftc -swift-version 5 -parse-as-library \
             LinYu/ApiModels.swift LinYu/BillService.swift LinYu/AppDataStore.swift \
-            LinYu/PendingSettlement.swift \
-            Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift Tests/SettlementRegression.swift \
+            LinYu/PendingSettlement.swift LinYu/SettlementEngine.swift \
+            LinYu/ActiveOrderStore.swift LinYu/MoneyFormat.swift \
+            Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
+            Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \
             -o "$RUNNER_TEMP/linyu-data-tests"
           "$RUNNER_TEMP/linyu-data-tests"
 

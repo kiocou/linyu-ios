@@ -151,7 +151,7 @@ enum SettlementEngine {
                 lastRawLogged = raw
                 AppLog.shared.i("结算原始响应 consumeOrder/result/query: \(raw)")
             }
-            return extractMoney(raw)
+            return probeMoney(raw)
         } catch {
             return .unknown
         }
@@ -167,7 +167,8 @@ enum SettlementEngine {
     /// 而且看着还挺像个正常数字，不会有人发现不对。
     ///
     /// ⚠️ 单位是**厘**，必须过一遍 `toYuan`。
-    private static func extractMoney(_ raw: String) -> MoneyProbe {
+    /// ⚠️ 故意做成 internal：回归检查要直接喂各种学校的响应形状给它
+    static func probeMoney(_ raw: String) -> MoneyProbe {
         guard let data = raw.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return .unknown }
