@@ -56,5 +56,9 @@ enum DeviceControlRegression {
             check(true, "恢复拒绝他人订单")
         } else { check(false, "恢复拒绝他人订单") }
         ApiClient.postResponse = #"{"success":true,"data":null}"#
+        ApiClient.postPaths = []
+        if case .closed = await CloudShower.close(snCode: "A", orderNo: "order-A") {
+            check(ApiClient.postPaths == ["/order/tcpDevice/closeOrder"], "服务端受理关阀后立即返回，不等待仅供日志使用的查询")
+        } else { check(false, "服务端受理关阀后立即返回，不等待仅供日志使用的查询") }
     }
 }
