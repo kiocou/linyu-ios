@@ -187,14 +187,16 @@ struct CustomBackgroundView: View {
         ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 0) {
-                        Button(action: onBack) {
-                            Image(systemName: "arrow.left")
-                                .font(.system(size: 20))
-                                .frame(width: 48, height: 48)
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        .accessibilityLabel("返回")
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 20))
+                            .frame(width: 48, height: 48)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                AppLog.shared.i("背景装扮：点击返回")
+                                onBack()
+                            }
+                            .accessibilityLabel("返回")
+                            .accessibilityAddTraits(.isButton)
                         Text("自定义背景").font(.system(size: 20, weight: .bold))
                     }
                     .foregroundStyle(colors.textPrimary)
@@ -245,13 +247,26 @@ struct CustomBackgroundView: View {
                 }.padding(20).padding(.bottom, 60)
             }
             .background(colors.solidSurface.ignoresSafeArea())
-            .ignoresSafeArea(.container, edges: .bottom)
+            // 安卓 `verticalScroll` 不显示滚动条；iOS 的指示器常驻在右侧，这里关掉
+            .scrollIndicators(.hidden)
             .alert("恢复默认背景？", isPresented: $resetConfirm) {
                 Button("取消", role: .cancel) {}
                 Button("恢复默认", role: .destructive) {
                     do { try backgrounds.reset(scope) } catch { errorText = error.localizedDescription }
                 }
             } message: { Text("这将移除当前页面的自定义背景及相关效果。\n不会影响深色 / 浅色模式。") }
+        // 兜底返回：左边缘右滑（本 App 其它页面也是这个手势，对应安卓的返回键/手势）。
+        // 万一某个机型的按钮热区异常，用户也不会被困在这一页里。
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 30).onEnded { value in
+                guard value.startLocation.x < 30,
+                      value.translation.width > 80,
+                      abs(value.translation.height) < 60 else { return }
+                AppLog.shared.i("背景装扮：左边缘右滑返回")
+                onBack()
+            }
+        )
+        .onAppear { AppLog.shared.i("背景装扮页已显示（modal）") }
         .onChange(of: selection) { item in
             guard let item else { return }
             let destination = scope
@@ -267,17 +282,19 @@ struct CustomBackgroundView: View {
         }
     }
     private func scopeChip(_ title: String, value: BackgroundScope) -> some View {
-        Button { scope = value } label: {
-            Text(title).font(.system(size: 14, weight: .medium))
-                .foregroundStyle(scope == value ? Color.white : colors.textPrimary)
-                .frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background(scope == value ? colors.accent : colors.card, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8))
-        }
-        .buttonStyle(.plain)
-        // 明确的点击区：整块胶囊都可点（不只是文字那几像素）
-        .contentShape(RoundedRectangle(cornerRadius: 12))
-        .accessibilityAddTraits(scope == value ? .isSelected : [])
+        Text(title).font(.system(size: 14, weight: .medium))
+            .foregroundStyle(scope == value ? Color.white : colors.textPrimary)
+            .frame(maxWidth: .infinity).padding(.vertical, 10)
+            .background(scope == value ? colors.accent : colors.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(colors.border, lineWidth: 0.8))
+            // 整块胶囊都是热区（不只是文字那几像素）
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .onTapGesture {
+                AppLog.shared.i("背景装扮：切换到 \(value.rawValue)")
+                scope = value
+            }
+            .accessibilityAddTraits(scope == value ? .isSelected : [])
+            .accessibilityAddTraits(.isButton)
     }
 
     private var preview: some View {
