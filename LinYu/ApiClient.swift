@@ -37,7 +37,7 @@ struct ApiClient {
         "module_list,advertise_type,question_list,service_phone_list," +
         "banner_list_app,activity_list_app,aliCard_popup_config"
 
-    private static let session: URLSession = {
+    static var session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 30
@@ -57,6 +57,8 @@ struct ApiClient {
         body: [String: Any],
         tag: String? = nil
     ) async throws -> Data {
+        try Task.checkCancellation()
+        let generation = Session.shared.requestGeneration
         guard let url = URL(string: baseURL + path) else {
             throw ApiError.transport("URL 非法：\(path)")
         }
@@ -74,6 +76,7 @@ struct ApiClient {
         let started = Date()
         do {
             let (data, resp) = try await session.data(for: req)
+            try validateGeneration(generation)
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let text = String(data: data, encoding: .utf8) ?? ""
@@ -85,9 +88,12 @@ struct ApiClient {
                 throw ApiError.unauthorized(status: code)
             }
             return data
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as ApiError {
             throw error
         } catch {
+            try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL POST(json) \(path)", "\(error.localizedDescription)")
             throw ApiError.transport(error.localizedDescription)
         }
@@ -100,6 +106,8 @@ struct ApiClient {
         withAuth: Bool = true,
         tag: String? = nil
     ) async throws -> Data {
+        try Task.checkCancellation()
+        let generation = Session.shared.requestGeneration
         var fields = form
         if withAuth {
             for (k, v) in Session.shared.authFields { fields[k] = v }
@@ -131,6 +139,7 @@ struct ApiClient {
         let started = Date()
         do {
             let (data, resp) = try await session.data(for: req)
+            try validateGeneration(generation)
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let text = String(data: data, encoding: .utf8) ?? ""
@@ -144,7 +153,12 @@ struct ApiClient {
                 throw ApiError.unauthorized(status: code)
             }
             return data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ApiError {
+            throw error
         } catch {
+            try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL POST \(path)", "\(error.localizedDescription)")
             throw ApiError.transport(error.localizedDescription)
         }
@@ -156,6 +170,8 @@ struct ApiClient {
         query: [String: String] = [:],
         tag: String? = nil
     ) async throws -> Data {
+        try Task.checkCancellation()
+        let generation = Session.shared.requestGeneration
         guard var comps = URLComponents(string: baseURL + path) else {
             throw ApiError.transport("URL 非法：\(path)")
         }
@@ -176,6 +192,7 @@ struct ApiClient {
         let started = Date()
         do {
             let (data, resp) = try await session.data(for: req)
+            try validateGeneration(generation)
             let ms = Int(Date().timeIntervalSince(started) * 1000)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let text = String(data: data, encoding: .utf8) ?? ""
@@ -187,13 +204,23 @@ struct ApiClient {
                 throw ApiError.unauthorized(status: code)
             }
             return data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ApiError {
+            throw error
         } catch {
+            try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL GET \(path)", "\(error.localizedDescription)")
             throw ApiError.transport(error.localizedDescription)
         }
     }
 
     // MARK: - 内部
+
+    private static func validateGeneration(_ generation: UUID) throws {
+        try Task.checkCancellation()
+        guard generation == Session.shared.requestGeneration else { throw CancellationError() }
+    }
 
     private static func applyCommonHeaders(_ req: inout URLRequest) {
         let pid = Session.shared.projectId

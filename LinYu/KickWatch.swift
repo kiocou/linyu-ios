@@ -53,7 +53,9 @@ final class KickWatch: ObservableObject {
         // 已经登出了（正常退出或被挤）就不用再问了
         guard Session.shared.isLoggedIn, Session.shared.kickedReason == nil else { return }
 
+        let generation = Session.shared.requestGeneration
         let probe = await BillService.probeWallet()
+        guard !Task.isCancelled, generation == Session.shared.requestGeneration else { return }
 
         if probe.ok {
             // 顺手刷新余额（对照 Android：心跳里带上余额）

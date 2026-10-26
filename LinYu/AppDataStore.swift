@@ -151,6 +151,7 @@ final class AppDataStore: ObservableObject {
     /// 直接写入一份台账结果（扫码绑定等已经拿到 DeviceInfo 的场景）
     func putDeviceInfo(_ info: DeviceInfo, sn: String) {
         deviceInfos[sn] = info
+        if let ledgerSN = info.snCode, !ledgerSN.isEmpty { deviceInfos[ledgerSN] = info }
     }
 
     func deviceInfo(_ sn: String) async {
@@ -162,14 +163,10 @@ final class AppDataStore: ObservableObject {
         defer { resolving.remove(sn) }
 
         do {
-            let data = try await ApiClient.get(
-                "/device/info/mac",
-                query: ["macAddress": sn],
-                tag: "deviceInfo"
-            )
-            let resp = try ApiClient.decode(DeviceInfo.self, from: data, path: "deviceInfo")
-            if resp.success, let info = resp.data {
-                deviceInfos[sn] = info
+            let info = try await DeviceLookup.load(sn)
+            guard !Task.isCancelled, currentProfileOwner() == profileOwner else { return }
+            if let info {
+                putDeviceInfo(info, sn: sn)
             } else {
                 retryAfter[sn] = Date().addingTimeInterval(60)
                 AppLog.shared.w("台账查不到 \(sn)（success=true 但 data 为空）")

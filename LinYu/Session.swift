@@ -36,6 +36,19 @@ final class Session: ObservableObject {
     }
 
     var isLoggedIn: Bool { !loginCode.isEmpty }
+    /// 每次建立/结束登录都换代，同账号重新登录也不接收旧请求结果。
+    private let generationLock = NSLock()
+    private var generation = UUID()
+    var requestGeneration: UUID {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation
+    }
+    private func advanceGeneration() {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        generation = UUID()
+    }
 
     // MARK: - 保存 / 恢复
 
@@ -47,6 +60,7 @@ final class Session: ObservableObject {
         telephone: String,
         displayName: String? = nil
     ) {
+        advanceGeneration()
         self.loginCode = loginCode
         self.userId = userId
         self.accountId = accountId
@@ -77,6 +91,7 @@ final class Session: ObservableObject {
     }
 
     func logout(preserveActiveRecovery: Bool = false) {
+        advanceGeneration()
         ProfileCache.clear()
         loginCode = ""
         userId = ""

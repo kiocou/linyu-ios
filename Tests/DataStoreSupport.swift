@@ -27,6 +27,8 @@ final class AppLog {
 enum ApiClient {
     static var getResponses: [String: String] = [:]
     static var getPaths: [String] = []
+    static var deviceQueries: [String] = []
+    static var deviceResponses: [String: String] = [:]
     static var failBills = false
     static var emptyBills = false
     static var failingMonth: String?
@@ -41,6 +43,11 @@ enum ApiClient {
         try Task.checkCancellation()
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         getPaths.append(path)
+        if path == "/device/info/mac" {
+            let address = query["macAddress"] ?? ""
+            deviceQueries.append(address)
+            if let response = deviceResponses[address] { return Data(response.utf8) }
+        }
         if let response = getResponses[path] { return Data(response.utf8) }
         if path.contains("bill/list") {
             if failBills { throw URLError(.notConnectedToInternet) }

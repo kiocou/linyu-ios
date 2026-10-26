@@ -32,11 +32,16 @@ jobs:
             LinYu/ActiveOrderStore.swift LinYu/MoneyFormat.swift \
             LinYu/ProfileCache.swift LinYu/DeviceStateParser.swift LinYu/LoginFeedback.swift Tests/ParityBatchRegression.swift \
             LinYu/BleRequestFields.swift \
+            LinYu/DeviceAddress.swift Tests/DeviceAddressRegression.swift \
             LinYu/DeviceControlPolicy.swift LinYu/CloudShower.swift Tests/DeviceControlRegression.swift \
             Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
             Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \
             -o "$RUNNER_TEMP/linyu-data-tests"
           "$RUNNER_TEMP/linyu-data-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/ApiModels.swift LinYu/ApiClient.swift Tests/NetworkRegression.swift \
+            -o "$RUNNER_TEMP/linyu-network-tests"
+          "$RUNNER_TEMP/linyu-network-tests"
 
       - name: 生成 Xcode 工程
         run: xcodegen generate

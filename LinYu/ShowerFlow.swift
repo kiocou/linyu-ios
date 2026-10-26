@@ -1068,13 +1068,7 @@ final class ShowerFlow: ObservableObject {
             info = cached
         } else {
             do {
-                let data = try await ApiClient.get(
-                    "/device/info/mac",
-                    query: ["macAddress": sn],
-                    tag: "deviceInfo"
-                )
-                let resp = try ApiClient.decodeShell(DeviceInfo.self, from: data, path: "deviceInfo")
-                guard resp.success, let d = resp.data else {
+                guard let d = try await DeviceLookup.load(sn) else {
                     flowToast("获取设备信息失败，稍后重试")
                     return
                 }

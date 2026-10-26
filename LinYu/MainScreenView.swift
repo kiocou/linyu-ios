@@ -467,15 +467,17 @@ struct MainScreenView: View {
         await store.deviceInfo(sn)
         // 台账拿到之后再问一次「这台有没有订单」——对照 Android `fetchInfo`：
         // 用使用码在键盘上开机后，这里能发现「已经有订单」，首页就会出现使用中卡片
-        guard store.deviceInfos[sn] != nil else { return }
-        await flow.refreshDeviceStatus(sn)
+        guard let info = store.deviceInfos[sn] else { return }
+        scanner.register(info: info, advertisedSN: sn)
+        if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) }
     }
 
     private func openDetail(_ sn: String) {
         // Android fetchDeviceInfo：缓存命中立即展示，查询占用不挡住点击反馈。
         if let info = store.deviceInfos[sn] {
+            scanner.register(info: info, advertisedSN: sn)
             detailDevice = info
-            Task { await flow.refreshDeviceStatus(sn) }
+            Task { if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) } }
             return
         }
         Task {
@@ -485,7 +487,8 @@ struct MainScreenView: View {
                 return
             }
             detailDevice = info
-            await flow.refreshDeviceStatus(sn)
+            scanner.register(info: info, advertisedSN: sn)
+            if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) }
         }
     }
 
@@ -542,13 +545,7 @@ struct MainScreenView: View {
             info = cached
         } else {
             do {
-                let data = try await ApiClient.get(
-                    "/device/info/mac",
-                    query: ["macAddress": sn],
-                    tag: "deviceInfo"
-                )
-                let resp = try ApiClient.decode(DeviceInfo.self, from: data, path: "deviceInfo")
-                guard resp.success, let d = resp.data else {
+                guard let d = try await DeviceLookup.load(sn) else {
                     flow.toast = "获取设备信息失败"
                     return
                 }

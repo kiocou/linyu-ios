@@ -67,10 +67,7 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
     /// （29 字节的、6 字节的）也「凑」出了假 snCode，实测 56 台里有 17 个假值。
     /// 宁可解析不出来，也不能给出错的 SN——错 SN 会直接导致查错台账。
     var parsedSnCode: String? {
-        guard let data = manufacturerData else { return nil }
-        guard data.count == 8 else { return nil }
-        guard data[data.startIndex] == 0x00, data[data.startIndex + 1] == 0x00 else { return nil }
-        return data.suffix(6).map { String(format: "%02X", $0) }.joined()
+        DeviceAddress.advertisedSN(manufacturerData)
     }
 
     /// 把 snCode 还原成常见 MAC 写法（仅用于展示/对照）
@@ -145,6 +142,9 @@ struct DiscoveredPeripheral: Identifiable, Equatable {
 
     static func == (lhs: DiscoveredPeripheral, rhs: DiscoveredPeripheral) -> Bool {
         lhs.id == rhs.id
+            && lhs.name == rhs.name
+            && lhs.serviceUUIDs == rhs.serviceUUIDs
+            && lhs.isConnectable == rhs.isConnectable
             && lhs.rssi == rhs.rssi
             && lhs.manufacturerData == rhs.manufacturerData
             && lhs.serviceData == rhs.serviceData
@@ -419,8 +419,21 @@ final class BLEScanner: NSObject, ObservableObject {
     /// （iOS 不能像 Android 那样 `getRemoteDevice(mac)` 新建一个）。
     func peripheral(forSn sn: String) -> CBPeripheral? {
         guard !sn.isEmpty else { return nil }
-        guard let d = devices.first(where: { $0.parsedSnCode == sn }) else { return nil }
+        let key = DeviceAddress.normalize(sn) ?? sn
+        guard !confirmedDevices.isAmbiguous(key) else { return nil }
+        if let id = confirmedDevices.peripheralID(for: key) { return peripherals[id] }
+        let matches = devices.filter { $0.parsedSnCode == key }
+        guard matches.count == 1, let d = matches.first else { return nil }
         return peripherals[d.id]
+    }
+
+    // 服务端确认台账后才建立映射，不凭信号强度或派生地址猜连接目标。
+    private var confirmedDevices = ConfirmedDeviceMap()
+    func register(info: DeviceInfo, advertisedSN: String) {
+        guard let address = DeviceAddress.normalize(advertisedSN) else { return }
+        for device in devices where device.parsedSnCode == address {
+            confirmedDevices.register([info.snCode, info.macAddress, info.realMac, advertisedSN].compactMap { $0 }, id: device.id)
+        }
     }
 
     override init() {
@@ -606,7 +619,12 @@ extension BLEScanner: CBCentralManagerDelegate {
         byId[item.id] = item
         // 保留引用，后面"连接测试"要用
         peripherals[item.id] = peripheral
-        devices = byId.values.sorted { $0.rssi > $1.rssi }
+        // 扫描中只原位更新，结束时才按信号排序，避免点击前设备换位。
+        if let index = devices.firstIndex(where: { $0.id == item.id }) {
+            devices[index] = item
+        } else {
+            devices.append(item)
+        }
     }
 }
 
