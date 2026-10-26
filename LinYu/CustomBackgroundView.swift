@@ -327,7 +327,7 @@ struct CustomBackgroundView: View {
                         DialogTextButton(title: "取消", color: colors.accent) { resetConfirm = false }
                         DialogFilledButton(title: "恢复默认", color: colors.danger) {
                             resetConfirm = false
-                            do { try backgrounds.reset(scope) } catch { errorText = error.localizedDescription }
+                            do { try backgrounds.reset(scope) } catch { errorText = LoginFeedback.message(error, fallback: "恢复默认背景失败，请重试") }
                         }
                     }
                 }
@@ -355,7 +355,7 @@ struct CustomBackgroundView: View {
                     }
                     try backgrounds.save(data, scope: destination)
                 } catch {
-                    errorText = "图片加载失败：\(error.localizedDescription)"
+                    errorText = "图片加载失败，请重试"
                 }
             }
         }

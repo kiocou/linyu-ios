@@ -289,16 +289,10 @@ struct NotifyCardView: View {
 
                     if expanded {
                         // 文案逐条照搬 Android 的 NotifyRow（标题 + 说明 + 开关靠右）
-                        notifyRow("用水状态通知", "使用期间在通知栏显示已用时间", $inUse) { Prefs.notifyInUse = $0; notifications.settingsChanged() }
+                        notifyRow("用水状态通知", "使用期间在通知栏显示设备", $inUse) { Prefs.notifyInUse = $0; notifications.settingsChanged() }
                         notifyRow("使用结束通知", "停止后显示用时和消费金额", $finished) { Prefs.notifyFinished = $0; notifications.settingsChanged() }
                         notifyRow("自动关停提醒", "设备超时自己关闭时提醒", $autoClose) { Prefs.notifyAutoClose = $0; notifications.settingsChanged() }
                         notifyRow("横幅提醒", "开阀失败、设备被占用时从屏幕顶部弹出", $alert) { Prefs.notifyAlert = $0; notifications.settingsChanged() }
-                        Button("发送测试通知") {
-                            Task { await notifications.sendTestNotification() }
-                        }.font(.system(size: 13)).foregroundStyle(colors.accent).padding(.top, 10)
-                        if let result = notifications.testResult {
-                            Text(result).font(.system(size: 12)).foregroundStyle(colors.textSecondary).padding(.top, 6)
-                        }
                     }
                 }
             }

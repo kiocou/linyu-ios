@@ -563,7 +563,8 @@ extension BLEScanner: CBCentralManagerDelegate {
             Task { @MainActor in s.handleDidFailToConnect(peripheral, error: error) }
             return
         }
-        gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
+        gattSummary = "蓝牙连接失败，请重试"
+        if let error { AppLog.shared.w("蓝牙连接失败：\(error.localizedDescription)") }
         connectedId = nil
     }
 
@@ -577,7 +578,7 @@ extension BLEScanner: CBCentralManagerDelegate {
             return
         }
         if connectedId != nil {
-            gattSummary = "已断开\(error.map { "（\($0.localizedDescription)）" } ?? "")"
+            gattSummary = "蓝牙已断开"
         }
         connectedId = nil
     }
@@ -634,7 +635,8 @@ extension BLEScanner: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
-            gattSummary = "发现服务失败：\(error.localizedDescription)"
+            AppLog.shared.w("发现服务失败：\(error.localizedDescription)")
+            gattSummary = "蓝牙服务查询失败"
             return
         }
         let services = peripheral.services ?? []

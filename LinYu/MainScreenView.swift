@@ -553,7 +553,7 @@ struct MainScreenView: View {
                 await store.putDeviceInfo(d, sn: sn)
                 info = d
             } catch {
-                flow.toast = "获取设备信息失败：\(error.localizedDescription)"
+                flow.toast = "获取设备信息失败：\(LoginFeedback.message(error))"
                 return
             }
         }

@@ -7,17 +7,14 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
     @Published private(set) var actions: [DeviceNotificationAction] = []
     @Published private(set) var permissionDenied = false
     @Published private(set) var authorizationError: String?
-    @Published private(set) var testResult: String?
     @Published private(set) var settingsRevision = 0
     @Published var destinationTab: Int?
-    private var inUseMinutes: [String: String] = [:]
+    private var inUseOrders: [String: String] = [:]
     static var accountKey: String { Session.shared.projectId + ":" + Session.shared.accountId }
 
     func consume(_ id: UUID) { actions.removeAll { $0.id == id } }
 
-    /// 「结束用水」按钮的 action id
-    static let stopAction = "LINYU_STOP_ACTION"
-    /// 「使用中」通知的分类（带按钮）
+    /// 状态提示分类，不提供容器内不可靠的关阀按钮。
     static let inUseCategory = "LINYU_IN_USE"
 
     func configure() {
@@ -25,18 +22,17 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         // 旧版通知没有目标身份，不能保留可误导的停止入口。
         center.removePendingNotificationRequests(withIdentifiers: ["linyu.inUse", "linyu.finished"])
         center.removeDeliveredNotifications(withIdentifiers: ["linyu.inUse", "linyu.finished"])
-        // 对照 Android 通知栏那条「结束用水」按钮。
-        // ⚠️ iOS 的通知**不会常驻**、也不能像前台服务那样每秒刷新计时，
-        // 所以这里只做到「用中有一条通知 + 一键结束」，这是系统能力的边界。
-        let stop = UNNotificationAction(
-            identifier: Self.stopAction,
-            title: "结束用水",
-            // 必须 foreground：后台既连不上蓝牙也发不了关阀请求
-            options: [.foreground]
-        )
+        // 替换旧分类以移除结束按钮；旧版计时通知一并清理，前台按活跃订单重建。
+        center.getDeliveredNotifications { values in
+            let ids = values.filter {
+                ($0.request.content.categoryIdentifier == Self.inUseCategory && $0.request.content.body.hasPrefix("已用 ")) || $0.request.identifier == "linyu.test"
+            }.map { $0.request.identifier }
+            self.center.removeDeliveredNotifications(withIdentifiers: ids)
+        }
+        center.removePendingNotificationRequests(withIdentifiers: ["linyu.test"])
         let category = UNNotificationCategory(
             identifier: Self.inUseCategory,
-            actions: [stop],
+            actions: [],
             intentIdentifiers: [],
             options: []
         )
@@ -49,12 +45,10 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         let name = device.count > 14 ? "…" + String(device.suffix(13)) : device
         let content = UNMutableNotificationContent()
         content.title = "正在使用 · " + name
-        let elapsed = max(0, Int((Int64(Date().timeIntervalSince1970 * 1000) - startedAt) / 1000))
-        let minute = elapsed / 60
-        let snapshot = "\(startedAt):\(orderNo):\(minute)"
-        guard inUseMinutes[snCode] != snapshot else { return }
-        inUseMinutes[snCode] = snapshot
-        content.body = "已用 \(elapsed / 60)分\(elapsed % 60)秒 · 点开回到使用页"
+        let snapshot = "\(startedAt):\(orderNo)"
+        guard inUseOrders[snCode] != snapshot else { return }
+        inUseOrders[snCode] = snapshot
+        content.body = "请在应用内查看或结束用水"
         content.categoryIdentifier = Self.inUseCategory
         content.threadIdentifier = "linyu.inUse." + Self.accountKey
         content.userInfo = DeviceNotificationTarget(accountKey: Self.accountKey, snCode: snCode,
@@ -65,10 +59,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         submit(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: false), content: content, trigger: nil))
     }
 
-    /// 通知上的按钮点击 —— 排队保存原设备与订单身份，回到前台再执行。
-    ///
-    /// ⚠️ 不能在回调里直接发关阀请求：CoreBluetooth 和网络在后台都不保证可用，
-    /// 而且 App 可能被系统挂起。放到前台执行才可靠。
+    /// 点击状态通知仅尝试打开原订单；旧版停止 action 一律忽略。
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -82,14 +73,13 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
             DispatchQueue.main.async { self.destinationTab = kind.destination; completionHandler() }
             return
         }
-        guard response.actionIdentifier == Self.stopAction ||
-                (response.actionIdentifier == UNNotificationDefaultActionIdentifier &&
-                 request.content.categoryIdentifier == Self.inUseCategory),
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              request.content.categoryIdentifier == Self.inUseCategory,
               let target = DeviceNotificationTarget(userInfo: request.content.userInfo) else {
             completionHandler(); return
         }
         DispatchQueue.main.async {
-            self.actions.append(DeviceNotificationAction(target: target, stop: response.actionIdentifier == Self.stopAction))
+            self.actions.append(DeviceNotificationAction(target: target, stop: false))
             completionHandler()
         }
     }
@@ -107,7 +97,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         do {
             let allowed = try await center.requestAuthorization(options: [.alert, .sound, .badge])
             await refreshAuthorization()
-            authorizationError = allowed ? nil : "系统未允许通知，请在系统设置中检查通知权限"
+            authorizationError = allowed ? nil : "请在系统设置中允许通知"
             return allowed
         }
         catch {
@@ -121,9 +111,9 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         let failure = error as NSError
         AppLog.shared.w("\(operation)失败：domain=\(failure.domain), code=\(failure.code), \(failure.localizedDescription)")
         if failure.domain == UNErrorDomain && failure.code == UNError.Code.notificationsNotAllowed.rawValue {
-            authorizationError = "系统拒绝通知，请检查通知权限。若使用 LiveContainer，请在该应用设置中开启修复本地通知后重启应用"
+            authorizationError = "通知未授权；容器安装请开启修复本地通知"
         } else {
-            authorizationError = "通知失败（\(failure.domain) \(failure.code)），请重试或导出日志"
+            authorizationError = "通知失败，请重试"
         }
     }
 
@@ -135,29 +125,15 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         }
     }
 
-    @MainActor func sendTestNotification() async {
-        testResult = nil
-        guard Prefs.notifyEnabled, await requestPermission() else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "通知测试"
-        content.body = "这是一条测试通知，不会操作设备"
-        content.userInfo["test"] = true
-        content.sound = .default
-        content.interruptionLevel = .active
-        do {
-            try await center.add(UNNotificationRequest(identifier: "linyu.test", content: content, trigger: nil))
-            testResult = "已提交系统，请检查通知中心"
-        } catch { recordFailure(error, operation: "测试通知") }
-    }
     func clear() {
-        inUseMinutes.removeAll()
+        inUseOrders.removeAll()
         destinationTab = nil
         actions.removeAll()
         center.removeAllPendingNotificationRequests()
         center.removeAllDeliveredNotifications()
     }
     func clearInUse(snCode: String) {
-        inUseMinutes[snCode] = nil
+        inUseOrders[snCode] = nil
         let id = DeviceNotificationTarget.notificationID(snCode: snCode, finished: false)
         center.removePendingNotificationRequests(withIdentifiers: [id])
         center.removeDeliveredNotifications(withIdentifiers: [id])
@@ -185,9 +161,6 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let kind = (notification.request.content.userInfo["kind"] as? String).flatMap(NotificationKind.init(rawValue:))
         guard kind.map(isEnabled) ?? Prefs.notifyEnabled else { completionHandler([]); return }
-        if notification.request.content.userInfo["test"] as? Bool == true {
-            completionHandler([.banner, .list, .sound]); return
-        }
         if notification.request.content.userInfo["quietUpdate"] as? Bool == true {
             completionHandler([.list]); return
         }
@@ -214,7 +187,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
     }
 
     func settingsChanged() {
-        inUseMinutes.removeAll()
+        inUseOrders.removeAll()
         settingsRevision += 1
         if !Prefs.notifyEnabled { clear(); return }
         center.getDeliveredNotifications { values in

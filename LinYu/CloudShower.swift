@@ -77,7 +77,7 @@ enum CloudShower {
             // 结果就是「蓝牙表只能蓝牙开」这件事在 iOS 上无从触发。
             rateResp = try ApiClient.decodeShell(DownRateData.self, from: data, path: "downRate")
         } catch {
-            return .failed("开阀请求失败：\(error.localizedDescription)")
+            return .failed("开阀请求失败：\(LoginFeedback.message(error))")
         }
 
         guard rateResp.success else {
@@ -162,7 +162,7 @@ enum CloudShower {
             if running == true {
                 return .unconfirmed("关阀请求没发出去，设备可能还在用水")
             }
-            return .unconfirmed("关阀请求没发出去：\(error.localizedDescription)")
+            return .unconfirmed("关阀请求未确认：\(LoginFeedback.message(error))，设备可能仍在用水，请重试")
         }
 
         if !resp.success {

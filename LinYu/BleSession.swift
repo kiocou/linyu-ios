@@ -469,7 +469,7 @@ extension BleSession {
         if callbackGuard.finishRetiring(peripheral.identifier) { return }
         guard acceptsCallback(peripheral), phase == .connecting else { return }
         let msg = error?.localizedDescription ?? "未知原因"
-        setPhase(.failed("连接失败：\(msg)"))
+        setPhase(.failed("蓝牙连接失败，请重试"))
         AppLog.shared.w("BLE 连接失败：\(msg)")
         connectContinuation?.resume(returning: false)
         connectContinuation = nil
@@ -505,7 +505,8 @@ extension BleSession: CBPeripheralDelegate {
         Task { @MainActor in
             guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .discovering else { return }
             if let error {
-                self.setPhase(.failed("发现服务失败：\(error.localizedDescription)"))
+                AppLog.shared.w("发现服务失败：\(error.localizedDescription)")
+                self.setPhase(.failed("蓝牙服务查询失败"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil
                 return

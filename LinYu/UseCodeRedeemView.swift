@@ -121,7 +121,7 @@ struct UseCodeRedeemView: View {
             remainTimes = result.remainTimes
             expires = Date().addingTimeInterval(180)
         } catch is CancellationError { return }
-        catch ApiError.business(_, let message) { errorText = unavailable ? nil : message }
+        catch ApiError.business(_, let message) { errorText = unavailable ? nil : LoginFeedback.chineseMessage(message, fallback: "换码失败，请重试") }
         catch { errorText = unavailable ? nil : "换码失败，请重试" }
     }
 

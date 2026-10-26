@@ -38,8 +38,12 @@ enum ParityBatchRegression {
         long[0] = 0x81
         check(DeviceStateParser.parse(long) == nil, "拒绝非成功状态帧")
 
-        check(LoginFeedback.message(URLError(.notConnectedToInternet)) == "网络连接失败，请检查网络设置", "断网提示中文")
-        check(LoginFeedback.message(URLError(.timedOut)) == "连接超时，请检查网络后重试", "超时提示中文")
+        check(LoginFeedback.message(URLError(.notConnectedToInternet)) == "网络异常，请重试", "断网提示中文")
+        check(LoginFeedback.message(URLError(.timedOut)) == "连接超时，请重试", "超时提示中文")
+        check(LoginFeedback.message(URLError(.secureConnectionFailed)) == "安全连接失败，请重试", "安全连接错误使用简短中文")
+        check(LoginFeedback.message(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "The operation could not be completed."])) == "网络异常，请重试", "未知英文错误不透出界面")
+        check(LoginFeedback.chineseMessage("设备不在线") == "设备不在线", "中文业务原因保留")
+        check(LoginFeedback.chineseMessage("Internal Server Error") == "请求失败，请稍后重试", "服务端英文错误使用中文兜底")
 
         ProfileCache.clear()
         ApiClient.getResponses = [

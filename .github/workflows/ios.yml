@@ -48,11 +48,11 @@ jobs:
             -o "$RUNNER_TEMP/linyu-data-tests"
           "$RUNNER_TEMP/linyu-data-tests"
           swiftc -swift-version 5 -parse-as-library \
-            LinYu/ApiModels.swift LinYu/ApiClient.swift LinYu/SessionWork.swift Tests/NetworkRegression.swift \
+            LinYu/ApiModels.swift LinYu/ApiClient.swift LinYu/LoginFeedback.swift LinYu/SessionWork.swift Tests/NetworkRegression.swift \
             -o "$RUNNER_TEMP/linyu-network-tests"
           "$RUNNER_TEMP/linyu-network-tests"
           swiftc -swift-version 5 -parse-as-library \
-            LinYu/ApiModels.swift LinYu/DeviceInfoDisplay.swift Tests/DeviceDisplayRegression.swift \
+            LinYu/ApiModels.swift LinYu/LoginFeedback.swift LinYu/DeviceInfoDisplay.swift Tests/DeviceDisplayRegression.swift \
             -o "$RUNNER_TEMP/linyu-display-tests"
           "$RUNNER_TEMP/linyu-display-tests"
 

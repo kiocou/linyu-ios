@@ -22,7 +22,7 @@ struct ChangePasswordDialog: View {
     @State private var newPwd = ""
     @State private var confirmPwd = ""
     @State private var code = ""
-    /// 验证码发给当前绑定手机号，与认证参数保持一致。
+    /// 与 Android 一致：预填当前手机号，允许修正后发送验证码。
     @State private var phone: String
     @State private var sending = false
     @State private var countdown = 0
@@ -48,7 +48,9 @@ struct ChangePasswordDialog: View {
             AlertCard(title: "修改密码", titleAlign: .leading) {
                 VStack(alignment: .leading, spacing: 10) {
                     if smsMode {
-                        dialogField("手机号", text: $phone, keyboard: .numberPad).disabled(true)
+                        dialogField("手机号", text: Binding(get: { phone }, set: {
+                            phone = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }), keyboard: .numberPad)
 
                         HStack(spacing: 10) {
                             dialogField("验证码", text: $code, keyboard: .numberPad)
@@ -128,7 +130,7 @@ struct ChangePasswordDialog: View {
                 countdown -= 1
             }
         } catch {
-            errorText = error.localizedDescription
+            errorText = LoginFeedback.message(error)
         }
     }
 
@@ -163,7 +165,7 @@ struct ChangePasswordDialog: View {
             onSuccess()
             onDismiss()
         } catch {
-            errorText = "修改失败：\(error.localizedDescription)"
+            errorText = LoginFeedback.message(error)
         }
     }
 
@@ -282,7 +284,7 @@ struct ChangePhoneDialog: View {
                 countdown -= 1
             }
         } catch {
-            errorText = error.localizedDescription
+            errorText = LoginFeedback.message(error)
         }
     }
 
@@ -304,7 +306,7 @@ struct ChangePhoneDialog: View {
             onSuccess()
             onDismiss()
         } catch {
-            errorText = "更换失败：\(error.localizedDescription)"
+            errorText = LoginFeedback.message(error)
         }
     }
 

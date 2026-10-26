@@ -87,7 +87,7 @@ final class MockProtocol: URLProtocol {
             catch { check(false, "\(name)过期网络错误类型") }
             MockProtocol.rotateSession = false
             do { _ = try await request(); check(false, "\(name)断网") }
-            catch ApiError.transport { check(true, "\(name)断网不当作登录失效") }
+            catch ApiError.transport(let message) { check(message == "网络异常，请重试", "\(name)断网不当作登录失效且提示简短中文") }
             catch { check(false, "\(name)断网错误类型") }
             MockProtocol.failNetwork = false
         }

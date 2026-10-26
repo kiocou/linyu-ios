@@ -8,7 +8,7 @@ struct APIResponse<T: Decodable>: Decodable {
     let errorMessage: String?
     let msg: String?
 
-    var displayMessage: String? { errorMessage ?? msg }
+    var displayMessage: String? { (errorMessage ?? msg).map { LoginFeedback.chineseMessage($0) } }
 }
 
 // MARK: - 登录

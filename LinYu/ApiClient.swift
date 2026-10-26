@@ -14,11 +14,11 @@ enum ApiError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .business(let code, let msg): return "\(msg)（\(code)）"
-        case .transport(let msg): return msg
+        case .business(let code, let msg): return "\(LoginFeedback.chineseMessage(msg))（\(code)）"
+        case .transport(let msg): return LoginFeedback.chineseMessage(msg, fallback: "网络异常，请重试")
         case .notLoggedIn: return "未登录"
-        case .unauthorized(let status): return "登录已失效（HTTP \(status)）"
-        case .http(let status): return "服务器请求失败（HTTP \(status)），请稍后重试"
+        case .unauthorized: return "登录已失效，请重新登录"
+        case .http: return "服务器异常，请稍后重试"
         }
     }
 }
@@ -63,7 +63,7 @@ struct ApiClient {
         let generation = Session.shared.requestGeneration
         try validateGeneration(generation)
         guard let url = URL(string: baseURL + path) else {
-            throw ApiError.transport("URL 非法：\(path)")
+            throw ApiError.transport("请求地址无效")
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -99,7 +99,7 @@ struct ApiClient {
         } catch {
             try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL POST(json) \(path)", "\(error.localizedDescription)")
-            throw ApiError.transport(error.localizedDescription)
+            throw ApiError.transport(LoginFeedback.message(error))
         }
     }
 
@@ -119,7 +119,7 @@ struct ApiClient {
         }
 
         guard let url = URL(string: baseURL + path) else {
-            throw ApiError.transport("URL 非法：\(path)")
+            throw ApiError.transport("请求地址无效")
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -166,7 +166,7 @@ struct ApiClient {
         } catch {
             try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL POST \(path)", "\(error.localizedDescription)")
-            throw ApiError.transport(error.localizedDescription)
+            throw ApiError.transport(LoginFeedback.message(error))
         }
     }
 
@@ -180,7 +180,7 @@ struct ApiClient {
         let generation = Session.shared.requestGeneration
         try validateGeneration(generation)
         guard var comps = URLComponents(string: baseURL + path) else {
-            throw ApiError.transport("URL 非法：\(path)")
+            throw ApiError.transport("请求地址无效")
         }
         var items = comps.queryItems ?? []
         for (k, v) in query { items.append(URLQueryItem(name: k, value: v)) }
@@ -191,7 +191,7 @@ struct ApiClient {
         }
         comps.queryItems = items
 
-        guard let url = comps.url else { throw ApiError.transport("URL 拼接失败") }
+        guard let url = comps.url else { throw ApiError.transport("请求地址无效") }
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
         applyCommonHeaders(&req)
@@ -219,7 +219,7 @@ struct ApiClient {
         } catch {
             try validateGeneration(generation)
             AppLog.shared.e("HTTP FAIL GET \(path)", "\(error.localizedDescription)")
-            throw ApiError.transport(error.localizedDescription)
+            throw ApiError.transport(LoginFeedback.message(error))
         }
     }
 

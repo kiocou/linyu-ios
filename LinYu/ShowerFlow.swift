@@ -540,7 +540,7 @@ final class ShowerFlow: ObservableObject {
                                       macType: macType, state: st, xfModel: xfModel, signature: signature), tag: "rateOrder")
         } catch {
             ble.disconnect()
-            errorMessage = "申请费率失败：\(error.localizedDescription)"
+            errorMessage = "申请费率失败：\(LoginFeedback.message(error))"
             return
         }
 
@@ -550,7 +550,7 @@ final class ShowerFlow: ObservableObject {
             rateResp = try ApiClient.decode(BluetoothRateOrderData.self, from: rateData, path: "bluetoothRateOrder")
         } catch {
             ble.disconnect()
-            errorMessage = "费率响应异常：\(error.localizedDescription)"
+            errorMessage = "费率响应异常，请重试"
             return
         }
 
@@ -1031,7 +1031,7 @@ final class ShowerFlow: ObservableObject {
         }
     }
 
-    /// 普通通知更新已确认订单的计时快照，不虚构后台实时监控或自动关阀事件。
+    /// 普通通知仅提示已确认的使用状态，不显示计时或提供关阀按钮。
     func refreshInUseNotifications() {
         guard workScope.isCurrent else { return }
         for record in ActiveOrderStore.all() {
@@ -1185,7 +1185,7 @@ final class ShowerFlow: ObservableObject {
                 }
                 info = d
             } catch {
-                flowToast("获取设备信息失败：\(error.localizedDescription)")
+                flowToast("获取设备信息失败：\(LoginFeedback.message(error))")
                 return
             }
         }
