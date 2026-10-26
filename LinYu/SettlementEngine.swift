@@ -20,19 +20,24 @@ enum SettlementEngine {
     /// 查出本次消费金额。
     ///
     /// - Returns: 金额（元）。`0.0` = 确实没花钱；`nil` = **还没查出来**（和 0 不是一回事）
-    static func settleAmount(
+    @MainActor static func settleAmount(
         orderNo: String,
         startTimeMs: Int64,
         snCode: String,
         deviceName: String = ""
     ) async -> Double? {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return nil }
         var sawDefiniteZero = false
 
         if !orderNo.isEmpty {
             // ① 快速探测：命中正数立刻收工。
             //    实测（Android 27 次调用）第 1 轮就是终值，不能让有消费的单子干等。
             probe: for attempt in 0 ..< probeRounds {
-                switch await queryConsumeResult(orderNo: orderNo, snCode: snCode) {
+                guard SessionWork.isCurrent(generation) else { return nil }
+                let result = await queryConsumeResult(orderNo: orderNo, snCode: snCode)
+                guard SessionWork.isCurrent(generation) else { return nil }
+                switch result {
                 case let .found(v):
                     Prefs.recordConsume(snCode, amount: v)
                     PendingSettlementStore.clear(snCode: snCode)
@@ -62,7 +67,9 @@ enum SettlementEngine {
             if sawDefiniteZero {
                 for attempt in 0 ..< zeroConfirmRounds {
                     try? await Task.sleep(nanoseconds: UInt64(zeroConfirmDelayMs) * 1_000_000)
+                    guard SessionWork.isCurrent(generation) else { return nil }
                     let zeroProbe = await queryConsumeResult(orderNo: orderNo, snCode: snCode)
+                    guard SessionWork.isCurrent(generation) else { return nil }
                     if case let .found(v) = zeroProbe {
                         Prefs.recordConsume(snCode, amount: v)
                         PendingSettlementStore.clear(snCode: snCode)
@@ -75,7 +82,9 @@ enum SettlementEngine {
         }
 
         // ③ 回退：拉账单列表自己匹配
-        let probe = await settleFromBillList(orderNo: orderNo, startTimeMs: startTimeMs, snCode: snCode)
+        guard SessionWork.isCurrent(generation) else { return nil }
+        let probe = await settleFromBillList(orderNo: orderNo, startTimeMs: startTimeMs, snCode: snCode, generation: generation)
+        guard SessionWork.isCurrent(generation) else { return nil }
 
         // 账单列表也没查到金额时，要靠**两种不同的信息**下结论：
         //
@@ -234,10 +243,11 @@ enum SettlementEngine {
         let sawBill: Bool
     }
 
-    private static func settleFromBillList(
+    @MainActor private static func settleFromBillList(
         orderNo: String,
         startTimeMs: Int64,
-        snCode: String
+        snCode: String,
+        generation: UUID
     ) async -> BillProbe {
         let month = currentMonth()
 
@@ -251,7 +261,9 @@ enum SettlementEngine {
         var sawBill = false
 
         for attempt in 0 ..< billListRounds {
+            guard SessionWork.isCurrent(generation) else { return BillProbe(amount: nil, sawBill: sawBill) }
             if let bills = await fetchBills(month: month) {
+                guard SessionWork.isCurrent(generation) else { return BillProbe(amount: nil, sawBill: sawBill) }
                 if let matched = matchBill(bills: bills, orderNo: orderNo, windowStartMs: windowStart) {
                     sawBill = true
                     // ⚠️ 账单里的 `consumeMoney` 是**字符串**、单位是**元**

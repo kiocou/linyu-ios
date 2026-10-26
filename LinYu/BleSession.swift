@@ -75,6 +75,8 @@ final class BleSession: NSObject, ObservableObject {
     }
 
     // MARK: - 连接
+    var operationAllowed: () -> Bool = { true }
+    private var canOperate: Bool { !Task.isCancelled && operationAllowed() }
 
     /// 用扫描到的 `CBPeripheral` 连接（**iOS 唯一可行的方式**）
     @discardableResult
@@ -83,6 +85,7 @@ final class BleSession: NSObject, ObservableObject {
         using manager: CBCentralManager,
         timeout: TimeInterval = 15
     ) async -> Bool {
+        guard canOperate else { return false }
         central = manager
         guard let central else { return false }
         guard central.state == .poweredOn else {
@@ -123,6 +126,7 @@ final class BleSession: NSObject, ObservableObject {
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
 
+        guard canOperate else { disconnect(); return false }
         if ok {
             setPhase(.ready)
             AppLog.shared.i("BLE 就绪：FF00/FF01/FF02 齐全，通知已开启")
@@ -131,6 +135,10 @@ final class BleSession: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        connectContinuation?.resume(returning: false)
+        connectContinuation = nil
         if let p = peripheral, let central {
             central.cancelPeripheralConnection(p)
         }
@@ -249,6 +257,7 @@ final class BleSession: NSObject, ObservableObject {
 
     /// 发一条命令并等对应 cmd 的应答
     private func sendAndAwait(cmd: UInt8, data: [UInt8], timeout: TimeInterval) async -> [UInt8]? {
+        guard canOperate else { return nil }
         let wire = BleFrame.cmdToWire(cmd: cmd, data: data)
         AppLog.shared.i("→ BLE 发 0x\(String(cmd, radix: 16))（\(wire.count)B）",
                         BleFrame.toHex(wire))
@@ -257,6 +266,7 @@ final class BleSession: NSObject, ObservableObject {
             AppLog.shared.w("0x\(String(cmd, radix: 16)) 写入失败")
             return nil
         }
+        guard canOperate else { return nil }
         return await awaitReply(cmd: cmd, timeout: timeout)
     }
 
@@ -267,6 +277,7 @@ final class BleSession: NSObject, ObservableObject {
         var offset = 0
         var index = 0
         while offset < wire.count {
+            guard canOperate else { return false }
             let len = min(Self.chunkSize, wire.count - offset)
             let chunk = Array(wire[offset..<(offset + len)])
 
@@ -409,6 +420,10 @@ extension BleSession {
 
     /// 已连接（BLEScanner 的 CBCentralManagerDelegate 转发过来）
     func handleDidConnect(_ peripheral: CBPeripheral) {
+        guard canOperate, self.peripheral?.identifier == peripheral.identifier else {
+            central?.cancelPeripheralConnection(peripheral)
+            return
+        }
         self.peripheral = peripheral
         peripheral.delegate = self
         setPhase(.discovering)

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 单笔代扣的结果 —— 逐条对照 Android `MainViewModel.DeductResult`。
 ///
@@ -39,6 +40,9 @@ struct DeductSummary {
 ///    不在了 = 扣成了。这是唯一能确定答案的办法，不能靠猜。
 @MainActor
 final class DeductService: ObservableObject {
+    private let generation = Session.shared.requestGeneration
+    private var stopped = false
+    private var isCurrent: Bool { !stopped && SessionWork.isCurrent(generation) }
 
     /// 未支付账单列表。界面靠它决定哪些账单显示「请求代扣」按钮
     @Published private(set) var bills: [UnpaidBill] = []
@@ -70,12 +74,14 @@ final class DeductService: ObservableObject {
 
     /// 拉一次未支付列表；失败返回 nil（调用方保持原样，不清空）
     private func fetch() async -> [UnpaidBill]? {
-        await BillService.loadUnpaid()
+        guard isCurrent else { return nil }
+        let result = await BillService.loadUnpaid()
+        return isCurrent ? result : nil
     }
 
     /// 拉未支付账单列表。**失败保持原样，不清空** —— 清空会让按钮凭空消失
     func load() async {
-        guard Session.shared.isLoggedIn else { return }
+        guard isCurrent else { return }
         seq += 1
         let mine = seq
         guard let list = await fetch() else { return }
@@ -103,6 +109,7 @@ final class DeductService: ObservableObject {
     /// ⚠️ `phoneSystem` 传 `WeChat` 是**照抄抓包**的：这个接口是官方 App 里那个 H5
     /// 页面调的，和原生请求（`phoneSystem=android`）不是一条路。
     private func deductOnce(_ consumeDate: String) async -> DeductResult {
+        guard isCurrent else { return .unknown(consumeDate: consumeDate) }
         guard !consumeDate.isEmpty else {
             return .failed(consumeDate: consumeDate, reason: "账单信息不完整")
         }
@@ -123,6 +130,7 @@ final class DeductService: ObservableObject {
                 tag: "deduct"
             )
             let resp = try ApiClient.decodeShell(EmptyData.self, from: data, path: "deduct")
+            guard isCurrent else { return .unknown(consumeDate: consumeDate) }
             if resp.success {
                 AppLog.shared.i("代扣成功：\(consumeDate)")
                 return .ok(consumeDate: consumeDate)
@@ -138,6 +146,7 @@ final class DeductService: ObservableObject {
 
     /// 手动请求代扣（单笔）
     func requestDeduct(consumeDate: String) async -> DeductResult {
+        guard isCurrent else { return .unknown(consumeDate: consumeDate) }
         guard !consumeDate.isEmpty else {
             return .failed(consumeDate: consumeDate, reason: "账单信息不完整")
         }
@@ -150,12 +159,13 @@ final class DeductService: ObservableObject {
         defer { deductingConsumeDate = nil }
 
         let result = await deductOnce(consumeDate)
+        guard isCurrent else { return .unknown(consumeDate: consumeDate) }
         switch result {
         case .ok:
             // 成功后立刻把这条从列表里摘掉，不等网络往返
             bills.removeAll { $0.consumeDate == consumeDate }
             await load()
-            onBillsChanged?()
+            if isCurrent { onBillsChanged?() }
         case .unknown:
             if await reconcile() == nil { await load() }
         case .failed:
@@ -171,6 +181,7 @@ final class DeductService: ObservableObject {
     ///
     /// - Returns: nil 表示**一笔都没发出去**（没有可补的，或已被另一个代扣挡住）
     func deductAll() async -> DeductSummary? {
+        guard isCurrent else { return nil }
         guard deductingConsumeDate == nil else { return nil }
         let dates = deductibleBills.compactMap { $0.consumeDate }
         guard !dates.isEmpty else { return nil }
@@ -183,8 +194,11 @@ final class DeductService: ObservableObject {
         var failReason: String?
 
         for date in dates {
+            guard isCurrent else { return nil }
             deductingConsumeDate = date
-            switch await deductOnce(date) {
+            let result = await deductOnce(date)
+            guard isCurrent else { return nil }
+            switch result {
             case .ok:
                 ok += 1
                 bills.removeAll { $0.consumeDate == date }
@@ -202,7 +216,7 @@ final class DeductService: ObservableObject {
         } else {
             await load()
         }
-        onBillsChanged?()
+        if isCurrent { onBillsChanged?() }
 
         return DeductSummary(ok: ok, failed: failed, unknown: unknown, firstFailReason: failReason)
     }
@@ -212,6 +226,7 @@ final class DeductService: ObservableObject {
 
     /// 退出登录 / 挤号时清掉（账单和代扣锁都是跟账号走的）
     func reset() {
+        stopped = true
         bills = []
         deductingConsumeDate = nil
         seq += 1

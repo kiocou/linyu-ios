@@ -4,8 +4,11 @@ enum ApiError: Error { case transport(String); case unauthorized(status: Int) }
 final class Session {
     static let shared = Session()
     var isLoggedIn = true
+    var requestGeneration = UUID()
     var projectId = "test-school"
     var accountId = "test-account"
+    var loginCode = "test-only"
+    var userId = "test-user"
 }
 enum Prefs {
     static var campusBalance = ""
@@ -37,6 +40,7 @@ enum ApiClient {
     static var postPaths: [String] = []
     static var postResponse = "{\"success\":true,\"data\":null}"
     static var failPost = false
+    static var onPost: (() -> Void)?
     static func get(_ path: String, query: [String: String] = [:], tag: String? = nil) async throws -> Data {
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -60,8 +64,12 @@ enum ApiClient {
     }
     static func post(_ path: String, form: [String: String], tag: String? = nil) async throws -> Data {
         postPaths.append(path)
+        onPost?()
         if failPost { throw URLError(.notConnectedToInternet) }
         return Data(postResponse.utf8)
+    }
+    static func postJSON(_ path: String, body: [String: Any], tag: String? = nil) async throws -> Data {
+        try await post(path, form: [:], tag: tag)
     }
     static func decode<T: Decodable>(_ type: T.Type, from data: Data, path: String) throws -> APIResponse<T> {
         try JSONDecoder().decode(APIResponse<T>.self, from: data)

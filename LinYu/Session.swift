@@ -61,6 +61,7 @@ final class Session: ObservableObject {
         displayName: String? = nil
     ) {
         advanceGeneration()
+        RecoveryArchive.activate(owner: projectId + ":" + accountId)
         self.loginCode = loginCode
         self.userId = userId
         self.accountId = accountId
@@ -92,6 +93,7 @@ final class Session: ObservableObject {
 
     func logout(preserveActiveRecovery: Bool = false) {
         advanceGeneration()
+        RecoveryArchive.suspend(owner: projectId + ":" + accountId, preserve: preserveActiveRecovery)
         ProfileCache.clear()
         loginCode = ""
         userId = ""
@@ -107,7 +109,8 @@ final class Session: ObservableObject {
         //
         // ⚠️ 被挤号时必须 `preserveActiveRecovery = true`：那时水可能还在流，
         // 订单和开阀时间戳要留着，重登之后才能从首页找到停止入口。
-        Prefs.clear(preserveActiveRecovery: preserveActiveRecovery)
+        // 恢复记录已按原账号归档，当前可见区必须清空。
+        Prefs.clear(preserveActiveRecovery: false)
         // 使用中/结束通知一起撤掉 —— 退出登录后还挂着「正在使用」会误导人
         // （对照 Android：logout 里会 cancel 通知）
         AppNotifications.shared.clear()
@@ -149,6 +152,7 @@ final class Session: ObservableObject {
         telephone = get("telephone") ?? ""
         displayName = get("displayName") ?? ""
         if !loginCode.isEmpty {
+            RecoveryArchive.bindExisting(owner: projectId + ":" + accountId)
             AppLog.shared.i("已恢复登录态：projectId=\(projectId)")
         }
     }

@@ -76,6 +76,7 @@ final class ShowerFlow: ObservableObject {
 
     @Published private(set) var activeOrder: ActiveOrder? {
         didSet {
+            guard workScope.isCurrent else { return }
             if oldValue?.snCode != activeOrder?.snCode {
                 liveConsumed = nil
                 didFireAutoClose = false
@@ -126,6 +127,7 @@ final class ShowerFlow: ObservableObject {
     // MARK: - 内部
 
     private var timer: Timer?
+    private let workScope = SessionWorkScope()
     /// 关阀后要断开重连做结算，必须记住当时的 peripheral / central
     private var currentPeripheral: CBPeripheral?
     private var currentCentral: CBCentralManager?
@@ -138,6 +140,7 @@ final class ShowerFlow: ObservableObject {
     var controlBusy: Bool { controlGate.isBusy }
 
     private func beginControl() -> UUID? {
+        guard workScope.isCurrent else { return nil }
         guard let token = controlGate.begin() else {
             toast = "正在处理设备操作，请稍候"
             return nil
@@ -146,6 +149,7 @@ final class ShowerFlow: ObservableObject {
     }
 
     init() {
+        ble.operationAllowed = { [weak self] in self?.workScope.isCurrent == true }
         restoredOrders = ActiveOrderStore.all()
         if !restoredOrders.isEmpty {
             AppLog.shared.i("启动时发现 \(restoredOrders.count) 条活跃订单：\(restoredOrders.map(\.snCode).joined(separator: ","))")
@@ -159,6 +163,7 @@ final class ShowerFlow: ObservableObject {
     /// ⚠️ 顺序有讲究：**先把计时写进去，再写订单**。反过来的话会出现
     /// 「订单在、计时为 0」的中间态，卡片会显示 00:00 并从零开始走秒。
     private func persist(_ order: ActiveOrder) {
+        guard workScope.isCurrent else { return }
         deviceRevisions[order.snCode, default: 0] &+= 1
         if Prefs.startedAt(order.snCode) <= 0 {
             Prefs.setStartedAt(order.snCode, Int64(Date().timeIntervalSince1970 * 1000))
@@ -200,6 +205,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 清掉这台设备的本地使用状态
     private func clearDeviceState(_ snCode: String) {
+        guard workScope.isCurrent else { return }
         deviceRevisions[snCode, default: 0] &+= 1
         // 不 cancel：此处也可能由监控任务自身调用，它后面仍须完成结算。
         // 先撤销身份，旧任务返回时不能再次处理或移除新的监控任务。
@@ -224,6 +230,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 关阀**没成功**时把刚清掉的本地状态放回去（对照 Android `restoreActiveOrder`）
     func restoreActiveOrder(snCode: String, orderNo: String, startedAtMs: Int64) {
+        guard workScope.isCurrent else { return }
         guard !snCode.isEmpty else { return }
         if startedAtMs > 0 { Prefs.setStartedAt(snCode, startedAtMs) }
         if ActiveOrderStore.find(snCode) == nil {
@@ -249,6 +256,10 @@ final class ShowerFlow: ObservableObject {
     /// （比如边洗衣服边接水）。`activeOrder` 只表示「使用页当前显示哪一单」，
     /// 其它单继续留在 `ActiveOrderStore` 里，首页照样能看到、能恢复。
     func open(device: DeviceInfo, peripheral: CBPeripheral?, central: CBCentralManager?) async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.open(device: device, peripheral: peripheral, central: central) }
+            return
+        }
         guard let token = beginControl() else { return }
         isStarting = true
         defer { isStarting = false; openingText = ""; controlGate.finish(token) }
@@ -256,6 +267,7 @@ final class ShowerFlow: ObservableObject {
     }
 
     private func performOpen(device: DeviceInfo, peripheral: CBPeripheral?, central: CBCentralManager?, allowNewOrder: Bool) async {
+        guard workScope.isCurrent else { return }
 
         let sn = device.snCode ?? ""
         // 同一台设备不重复开：已经在用就直接回使用页
@@ -278,6 +290,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 用户在「要用蓝牙方式开启吗？」里点了确认
     func confirmBleOpen() async {
+        guard workScope.isCurrent else { return }
         guard let device = bleConfirmDevice else { return }
         bleConfirmDevice = nil
         Prefs.markBleDevice(device.snCode ?? "")
@@ -308,8 +321,11 @@ final class ShowerFlow: ObservableObject {
             self?.handleMqtt(payload)
         }
 
-        switch await CloudShower.open(snCode: sn, allowNewOrder: allowNewOrder,
-                                     expectedOrderNo: allowNewOrder ? nil : ActiveOrderStore.find(sn)?.orderNo) {
+        guard workScope.isCurrent else { return }
+        let outcome = await CloudShower.open(snCode: sn, allowNewOrder: allowNewOrder,
+                                     expectedOrderNo: allowNewOrder ? nil : ActiveOrderStore.find(sn)?.orderNo)
+        guard workScope.isCurrent else { return }
+        switch outcome {
         case let .opened(orderNo, consumeDate, autoDisCon, pre):
             rememberDevice(device)
             activeOrder = ActiveOrder(
@@ -388,6 +404,7 @@ final class ShowerFlow: ObservableObject {
             return
         }
         connectedBleSn = sn
+        guard workScope.isCurrent else { return }
 
         // 2. 读状态
         openingText = "正在读取设备状态…"
@@ -398,6 +415,7 @@ final class ShowerFlow: ObservableObject {
         }
 
         // 身份核对：状态帧自报的 MAC 必须和要开的那台一致
+        guard workScope.isCurrent else { return }
         let expectMac = device.connectMac
         if !st.mac.isEmpty, !expectMac.isEmpty, st.mac.uppercased() != expectMac.uppercased() {
             ble.disconnect()
@@ -422,6 +440,7 @@ final class ShowerFlow: ObservableObject {
                 consumeDate: ""
             )
             ble.disconnect()
+            guard workScope.isCurrent else { return }
             guard settled.completed else {
                 errorMessage = "设备有未结算记录，自动补结算失败，请稍后重试"
                 return
@@ -509,6 +528,7 @@ final class ShowerFlow: ObservableObject {
         }
 
         let rateResp: APIResponse<BluetoothRateOrderData>
+        guard workScope.isCurrent else { return }
         do {
             rateResp = try ApiClient.decode(BluetoothRateOrderData.self, from: rateData, path: "bluetoothRateOrder")
         } catch {
@@ -536,6 +556,7 @@ final class ShowerFlow: ObservableObject {
         }
 
         // 5. 记账
+        guard workScope.isCurrent else { return }
         rememberDevice(device)
         activeOrder = ActiveOrder(
             device: device,
@@ -567,12 +588,17 @@ final class ShowerFlow: ObservableObject {
     ///
     /// 只有**水可能还在流**时才留在页面（让用户能重试）。
     func close() async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.close() }
+            return
+        }
         guard let order = activeOrder, let token = beginControl() else { return }
         defer { controlGate.finish(token) }
         await performClose(order)
     }
 
     private func performClose(_ order: ActiveOrder) async {
+        guard workScope.isCurrent else { return }
         isStopping = true
         defer { isStopping = false }
         let elapsed = order.elapsedSeconds
@@ -597,6 +623,7 @@ final class ShowerFlow: ObservableObject {
         // ⚠️ orderNo 必须在关阀**之前**敲定：关阀成功后订单就没了，
         // `queryUsing` 再也问不出来，后面的结算只能退化成按时间窗猜账单。
         let resolved = await CloudShower.resolveOrderNo(snCode: order.snCode)
+        guard workScope.isCurrent else { return }
         guard order.orderNo.isEmpty || resolved.isEmpty || resolved == order.orderNo else {
             toast = "设备订单已变化，请刷新设备状态后操作"
             startTimer()
@@ -606,12 +633,13 @@ final class ShowerFlow: ObservableObject {
         var settledOrder = order
         settledOrder.orderNo = orderNo
         let r = await CloudShower.close(snCode: order.snCode, orderNo: orderNo)
+        guard workScope.isCurrent else { return }
         switch r {
         case .closed:
             // 水已关 → 立刻退出使用页
             activeOrder = nil
             toast = "热水器已关闭"
-            Task { await settleCloud(settledOrder, elapsed: elapsed, automatic: automatic) }
+            Task { await workScope.run(fallback: ()) { await self.settleCloud(settledOrder, elapsed: elapsed, automatic: automatic) } }
         case let .unconfirmed(msg):
             // 没有证据 = 水可能还在流。留在页面让用户重试
             toast = "没能确认设备已关闭，请检查网络后重试"
@@ -635,6 +663,7 @@ final class ShowerFlow: ObservableObject {
             currentCentral = central
             connectedBleSn = order.snCode
         }
+        guard workScope.isCurrent else { return }
         guard let state = await ble.query(),
               !state.mac.isEmpty,
               state.mac.uppercased() == order.device.connectMac.uppercased() else {
@@ -642,7 +671,9 @@ final class ShowerFlow: ObservableObject {
             startTimer()
             return
         }
+        guard workScope.isCurrent else { return }
         let r = await ble.closeValve()
+        guard workScope.isCurrent else { return }
 
         guard r.waterStopped else {
             // ⚠️ 水可能还在流 —— 留在使用页，让他能重试
@@ -670,6 +701,7 @@ final class ShowerFlow: ObservableObject {
     /// 断开重连后再采集才被接受。原因是重连后设备才给出新的 `randomNumber`，
     /// 而上传签名用的正是它。
     private func settleBle(_ order: ActiveOrder, elapsed: Int, autoClosed: Bool = false) async {
+        guard workScope.isCurrent else { return }
 
         defer {
             ble.disconnect()
@@ -686,10 +718,12 @@ final class ShowerFlow: ObservableObject {
         // ② 断开 → 重连
         ble.disconnect()
         try? await Task.sleep(nanoseconds: 400_000_000)
+        guard workScope.isCurrent else { return }
 
         var reconnected = await ble.connect(peripheral: p, using: central)
         if !reconnected {
             try? await Task.sleep(nanoseconds: 500_000_000)
+            guard workScope.isCurrent else { return }
             reconnected = await ble.connect(peripheral: p, using: central)
         }
         guard reconnected else {
@@ -701,6 +735,7 @@ final class ShowerFlow: ObservableObject {
         // ③ 重新读状态 —— 要拿**新的** randomNumber / protocolType
         var st: DeviceState?
         for attempt in 1 ... 3 {
+            guard workScope.isCurrent else { return }
             st = await ble.query(timeout: 4)
             if st != nil { break }
             AppLog.shared.w("第 \(attempt) 次 0x23 无应答，600ms 后重试")
@@ -728,6 +763,7 @@ final class ShowerFlow: ObservableObject {
             orderNo: order.orderNo,
             consumeDate: order.consumeDate
         )
+        guard workScope.isCurrent else { return }
         if let amount = result.amount {
             Prefs.recordConsume(order.snCode, amount: amount)
         }
@@ -754,6 +790,7 @@ final class ShowerFlow: ObservableObject {
         orderNo: String,
         consumeDate: String
     ) async -> (completed: Bool, amount: Double?) {
+        guard workScope.isCurrent else { return (false, nil) }
         // ① 采集
         guard let payload = await ble.collect() else {
             AppLog.shared.w("结算：0x85 采集失败")
@@ -769,6 +806,7 @@ final class ShowerFlow: ObservableObject {
         }
 
         // ② 上传（xfData 必须**小写**：服务端对大小写敏感，签名用小写、上传字段也得小写）
+        guard workScope.isCurrent else { return (false, nil) }
         let xfData = BleFrame.toHex(payload).lowercased()
         guard let sig = BleSign.signUpload(
             loginCode: Session.shared.loginCode,
@@ -797,6 +835,7 @@ final class ShowerFlow: ObservableObject {
             }
 
             let yuan = body.upMoneyYuan
+            guard workScope.isCurrent else { return (false, nil) }
 
             // ③ 写回设备（清掉离线记录）；写回失败不影响——服务端已经记账
             if let clData = body.clData, !clData.isEmpty,
@@ -819,6 +858,7 @@ final class ShowerFlow: ObservableObject {
     }
 
     private func settleCloud(_ order: ActiveOrder, elapsed: Int, automatic: Bool = false) async {
+        guard workScope.isCurrent else { return }
         let accountKey = AppNotifications.accountKey
         // 与 Android 的 `SettlementEngine.settleAmount` 完全同一条路：
         // 直答接口 → 零确认 → 账单列表回退 → 登记待对账
@@ -828,7 +868,7 @@ final class ShowerFlow: ObservableObject {
             snCode: order.snCode,
             deviceName: order.device.displayName
         )
-        guard Session.shared.isLoggedIn, AppNotifications.accountKey == accountKey else { return }
+        guard workScope.isCurrent, AppNotifications.accountKey == accountKey else { return }
         finishWithAmount(yuan, autoClosed: automatic, deviceName: order.device.displayName, snCode: order.snCode, elapsed: elapsed)
     }
 
@@ -841,6 +881,7 @@ final class ShowerFlow: ObservableObject {
     /// ⚠️ 只补「还没有 orderNo」的情况：已有值就信任已有值，
     /// 否则同一单可能被反复改写（Android 那里也踩过 orderNo 被写成 snCode 的坑）。
     private func handleMqtt(_ payload: String) {
+        guard workScope.isCurrent else { return }
         guard let data = payload.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
@@ -878,6 +919,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 结算完成：记金额、弹提示（或自动关停弹窗）
     private func finishWithAmount(_ yuan: Double?, autoClosed: Bool, deviceName: String, snCode: String, elapsed: Int) {
+        guard workScope.isCurrent else { return }
         AppNotifications.shared.finished(device: deviceName, snCode: snCode,
             elapsed: elapsed,
             amount: yuan, automatic: autoClosed)
@@ -908,6 +950,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 结算失败时向服务端上报作废（蓝牙通道必须做：没有服务端兜底）
     private func reportFail(_ order: ActiveOrder) async {
+        guard workScope.isCurrent else { return }
         guard !order.consumeDate.isEmpty else { return }
         guard let sig = BleSign.signFail(
             loginCode: Session.shared.loginCode,
@@ -928,6 +971,7 @@ final class ShowerFlow: ObservableObject {
     // MARK: - 计时 / 自动关停
 
     private func startTimer() {
+        guard workScope.isCurrent else { return }
         stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -941,6 +985,7 @@ final class ShowerFlow: ObservableObject {
     }
 
     private func tick() {
+        guard workScope.isCurrent else { reset(); return }
         guard let order = activeOrder else { return }
         objectWillChange.send()
 
@@ -967,6 +1012,11 @@ final class ShowerFlow: ObservableObject {
     /// - 订单还在 → 把界面的秒数和倒计时拉正
     /// - 订单没了（在别处被关）→ 收尾退出使用页
     func reconcileOnResume() async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.reconcileOnResume() }
+            return
+        }
+        guard workScope.isCurrent else { return }
         guard !controlGate.isBusy else { return }
         guard let order = activeOrder else {
             restoredOrders = ActiveOrderStore.all()
@@ -983,6 +1033,7 @@ final class ShowerFlow: ObservableObject {
         // 云端表：问一次服务端还在不在用水（蓝牙表不能这么问，得连着）
         if order.channel == .cloud {
             let running = await CloudShower.orderRunning(snCode: order.snCode)
+            guard workScope.isCurrent else { return }
             guard !controlGate.isBusy, activeOrder?.snCode == order.snCode else { return }
             if running == false {
                 AppLog.shared.i("回前台对齐：服务端已无订单，退出使用页")
@@ -990,7 +1041,7 @@ final class ShowerFlow: ObservableObject {
                 activeOrder = nil
                 stopTimer()
                 toast = "设备已关闭"
-                Task { await settleCloud(order, elapsed: elapsed, automatic: true) }
+                Task { await workScope.run(fallback: ()) { await self.settleCloud(order, elapsed: elapsed, automatic: true) } }
             }
         }
     }
@@ -1000,6 +1051,10 @@ final class ShowerFlow: ObservableObject {
     /// 拉一次账单列表，能匹配上的就把金额补上并弹提示，匹配不上的继续留着。
     @discardableResult
     func reconcileSettlements() async -> [SettlementUpdate] {
+        if SessionWork.generation == nil {
+            return await workScope.run(fallback: []) { await self.reconcileSettlements() }
+        }
+        guard workScope.isCurrent else { return [] }
         let pending = PendingSettlementStore.all()
         guard !pending.isEmpty else { return [] }
 
@@ -1007,6 +1062,7 @@ final class ShowerFlow: ObservableObject {
             AppLog.shared.w("待对账复核：账单拉取失败，保留 \(pending.count) 条")
             return []
         }
+        guard workScope.isCurrent else { return [] }
         let result = SettlementReconciler.reconcile(pending: pending, bills: bills)
         PendingSettlementStore.save(result.remaining)
 
@@ -1030,6 +1086,7 @@ final class ShowerFlow: ObservableObject {
     // MARK: - 其它
 
     private func rememberDevice(_ device: DeviceInfo) {
+        guard workScope.isCurrent else { return }
         Prefs.lastDeviceName = device.displayName
         Prefs.lastDeviceMac = device.macAddress ?? device.snCode ?? ""
         Prefs.lastDeviceSnCode = device.snCode ?? ""
@@ -1049,12 +1106,17 @@ final class ShowerFlow: ObservableObject {
     /// 再让通道自己确认（云端查 `queryUsing`、蓝牙读状态帧）。
     /// 两边都会回「已有订单、是你的」→ 直接沿用，**不会重新开阀、不会重复扣预扣**。
     func resume(record: ActiveOrderRecord) async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.resume(record: record) }
+            return
+        }
         guard let token = beginControl() else { return }
         defer { controlGate.finish(token) }
         await restoreExisting(record: record)
     }
 
     private func restoreExisting(record: ActiveOrderRecord) async {
+        guard workScope.isCurrent else { return }
         // 已经在显示这一单 → 什么都不用做
         if activeOrder?.snCode == record.snCode { return }
         let sn = record.snCode
@@ -1096,9 +1158,13 @@ final class ShowerFlow: ObservableObject {
     /// 通知与 Android 的 doFinish(snCode) 一样，操作目标不依赖当前显示的使用页。
     /// 返回 false 只表示控制链忙，调用方保留动作，空闲后再处理。
     func handleNotification(_ action: DeviceNotificationAction) async -> Bool {
+        if SessionWork.generation == nil {
+            return await workScope.run(fallback: true) { await self.handleNotification(action) }
+        }
+        guard workScope.isCurrent else { return true }
         guard !controlGate.isBusy else { return false }
         let target = action.target
-        guard Session.shared.isLoggedIn,
+        guard workScope.isCurrent,
               target.matches(accountKey: AppNotifications.accountKey,
                              record: ActiveOrderStore.find(target.snCode),
                              startedAt: Prefs.startedAt(target.snCode)),
@@ -1136,17 +1202,21 @@ final class ShowerFlow: ObservableObject {
         guard target.matches(accountKey: AppNotifications.accountKey,
                              record: ActiveOrderStore.find(target.snCode),
                              startedAt: Prefs.startedAt(target.snCode)) else { return true }
-        switch await CloudShower.close(snCode: target.snCode, orderNo: orderNo) {
+        let outcome = await CloudShower.close(snCode: target.snCode, orderNo: orderNo)
+        guard workScope.isCurrent else { return true }
+        switch outcome {
         case .closed:
             markFinished(target.snCode)
             toast = "热水器已关闭"
             let accountKey = AppNotifications.accountKey
             Task {
-                let amount = await SettlementEngine.settleAmount(orderNo: orderNo,
-                    startTimeMs: target.startedAt, snCode: target.snCode, deviceName: record.deviceName)
-                guard Session.shared.isLoggedIn, AppNotifications.accountKey == accountKey else { return }
-                finishWithAmount(amount, autoClosed: false, deviceName: record.deviceName,
-                                 snCode: target.snCode, elapsed: elapsed)
+                await workScope.run(fallback: ()) { [self] in
+                    let amount = await SettlementEngine.settleAmount(orderNo: orderNo,
+                        startTimeMs: target.startedAt, snCode: target.snCode, deviceName: record.deviceName)
+                    guard workScope.isCurrent, AppNotifications.accountKey == accountKey else { return }
+                    finishWithAmount(amount, autoClosed: false, deviceName: record.deviceName,
+                                     snCode: target.snCode, elapsed: elapsed)
+                }
             }
         case let .failed(message): toast = message
         case .unconfirmed: toast = "没能确认设备已关闭，请检查网络后重试"
@@ -1185,6 +1255,7 @@ final class ShowerFlow: ObservableObject {
     /// ⚠️ 只在前台有效：App 被挂起后任务会被系统冻结。这是系统能力边界，
     /// 回到前台时由 `reconcileOnResume` 补一次。
     func startOrderWatch() {
+        guard workScope.isCurrent else { return }
         for record in ActiveOrderStore.all() where watchTasks[record.snCode] == nil {
             let sn = record.snCode
             let token = UUID()
@@ -1210,6 +1281,10 @@ final class ShowerFlow: ObservableObject {
 
     /// 单台设备的监控循环 —— 逐条对照 `ShowerWatchService.watch`
     private func watch(_ snCode: String, token: UUID) async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.watch(snCode, token: token) }
+            return
+        }
         // 无论从哪条路退出，都要把登记表里的自己摘掉 ——
         // 否则同一台设备下次开阀时会被「已经有任务」挡住，再也不会被监控
         defer {
@@ -1224,7 +1299,7 @@ final class ShowerFlow: ObservableObject {
             let seconds: UInt64 = (remain >= 1 && remain <= 14) ? UInt64(remain) : 15
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             if Task.isCancelled { return }
-            guard Session.shared.isLoggedIn else { return }
+            guard workScope.isCurrent else { return }
             // 别处已经清掉了（用户主动关阀）→ 监控结束
             guard watchTokens[snCode] == token,
                   let watched = ActiveOrderStore.find(snCode) else { return }
@@ -1241,7 +1316,7 @@ final class ShowerFlow: ObservableObject {
                 continue
             case .some(false):
                 if controlGate.isBusy { continue }
-                guard !Task.isCancelled, watchTokens[snCode] == token,
+                guard workScope.isCurrent, watchTokens[snCode] == token,
                       ActiveOrderStore.find(snCode) == watched,
                       Prefs.startedAt(snCode) == watchedStart else { continue }
                 await finishExternally(snCode)
@@ -1254,6 +1329,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 检测到用水在别处结束：清本地状态 → 通知 → 补结算
     private func finishExternally(_ snCode: String) async {
+        guard workScope.isCurrent else { return }
         guard let record = ActiveOrderStore.find(snCode) else { return }
         let startedAt = Prefs.startedAt(snCode)
         let elapsed = startedAt > 0
@@ -1287,7 +1363,7 @@ final class ShowerFlow: ObservableObject {
             snCode: snCode,
             deviceName: deviceName
         )
-
+        guard workScope.isCurrent else { return }
         AppNotifications.shared.finished(
             device: deviceName, snCode: snCode, elapsed: elapsed, amount: money, automatic: true
         )
@@ -1331,12 +1407,17 @@ final class ShowerFlow: ObservableObject {
     /// 2. **使用码启动检测**：用物理键盘使用码开机后，扫描到时这里会发现「已经有订单」，
     ///    于是把它记进活跃订单 —— 首页立刻出现「使用中的设备」，用户能直接去关阀
     func refreshDeviceStatus(_ snCode: String) async {
+        if SessionWork.generation == nil {
+            await workScope.run(fallback: ()) { await self.refreshDeviceStatus(snCode) }
+            return
+        }
+        guard workScope.isCurrent else { return }
         guard !snCode.isEmpty, !controlGate.isBusy else { return }
         let revision = deviceRevisions[snCode, default: 0]
         let accountKey = AppNotifications.accountKey
         guard let q = try? await CloudShower.queryUsing(snCode: snCode) else { return }
         guard !controlGate.isBusy, deviceRevisions[snCode, default: 0] == revision,
-              Session.shared.isLoggedIn, AppNotifications.accountKey == accountKey else { return }
+              workScope.isCurrent, AppNotifications.accountKey == accountKey else { return }
 
         let hasOrder = q.errorCode == 307 || (q.success && q.data?.orderNo != nil)
         guard hasOrder else {
@@ -1393,6 +1474,7 @@ final class ShowerFlow: ObservableObject {
     /// 后来拿它做账单时间窗兜底时，窗口就落在「刚点击恢复的那一刻」，
     /// 真正的消费账单在窗口之外——结算永远查不到金额。
     private func startDate(_ sn: String) -> Date {
+        guard workScope.isCurrent else { return Date() }
         let ms = Prefs.startedAt(sn)
         if ms > 0 { return Date(timeIntervalSince1970: Double(ms) / 1000) }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1402,6 +1484,7 @@ final class ShowerFlow: ObservableObject {
 
     /// 退出登录 / 会话失效时清干净
     func reset() {
+        workScope.cancel()
         ble.disconnect()
         mqtt.disconnect()
         liveConsumed = nil

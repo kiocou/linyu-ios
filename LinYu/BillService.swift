@@ -9,22 +9,27 @@ enum BillService {
     /// 月初打开 App 会看到空列表（像是「没消费过」），而消费趋势里 7 天视图也会缺数据。
     /// Android 那边同样拉 3 个月（`for (i in 0..2)`）。
     static func loadHistory() async -> [BillDTO] {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
         // 结算兜底保留已成功取得的月份，不因其它月份失败丢弃有效订单。
         var all: [BillDTO] = []
         for month in recentMonths() {
-            guard !Task.isCancelled else { break }
+            guard SessionWork.isCurrent(generation) else { return [] }
             if let list = try? await loadMonth(month) { all.append(contentsOf: list) }
         }
+        guard SessionWork.isCurrent(generation) else { return [] }
         return all
     }
 
     /// 页面缓存只能接受完整的成功结果，不能把失败或取消当作空账单。
     static func loadHistoryChecked() async throws -> [BillDTO] {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
         var all: [BillDTO] = []
         for month in recentMonths() {
             try Task.checkCancellation()
+            guard SessionWork.isCurrent(generation) else { throw CancellationError() }
             all.append(contentsOf: try await loadMonth(month))
         }
+        guard SessionWork.isCurrent(generation) else { throw CancellationError() }
         AppLog.shared.i("账单：拉取 \(all.count) 条（最近 3 个月）")
         return all
     }
@@ -35,9 +40,10 @@ enum BillService {
     /// 对账拿到的必须是完整账单，否则「没匹配到」可能只是因为那一个月没拉到，
     /// 于是把一条明明已经结算的记录当成「仍然待对账」一直留着。
     static func loadHistoryOrNil() async -> [BillDTO]? {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
         var all: [BillDTO] = []
         for month in recentMonths() {
-            guard !Task.isCancelled else { return nil }
+            guard SessionWork.isCurrent(generation) else { return nil }
             do {
                 all.append(contentsOf: try await loadMonth(month))
             } catch {
@@ -45,6 +51,7 @@ enum BillService {
                 return nil
             }
         }
+        guard SessionWork.isCurrent(generation) else { return nil }
         return all
     }
 
@@ -189,16 +196,17 @@ enum BillService {
     }
 
     /// 把两个余额来源刷进 Prefs（界面读 Prefs，所以刷完要手动触发刷新）
-    static func refreshBalances() async {
-        guard !Task.isCancelled else { return }
+    @MainActor static func refreshBalances() async {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return }
         if let c = await loadCampusInfo() {
-            guard !Task.isCancelled else { return }
+            guard SessionWork.isCurrent(generation) else { return }
             Prefs.campusBalance = c.amount ?? ""
             AppLog.shared.i("一卡通余额：\(c.amount ?? "空")")
         }
-        guard !Task.isCancelled else { return }
+        guard SessionWork.isCurrent(generation) else { return }
         if let w = await loadWallet() {
-            guard !Task.isCancelled else { return }
+            guard SessionWork.isCurrent(generation) else { return }
             // Android refreshWallet：money 已是元，accountRealMoney 为厘，不能混用。
             let v = w.moneyYuan
             Prefs.walletBalance = v.map { String($0) } ?? ""

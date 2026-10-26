@@ -33,11 +33,14 @@ enum CloudShower {
 
     /// 开阀。`budgetMs` 是轮询确认的总预算（Android 也是 6 秒）。
     static func open(snCode: String, budgetMs: Int = 6_000, allowNewOrder: Bool = true, expectedOrderNo: String? = nil) async -> OpenOutcome {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
         guard !snCode.isEmpty else { return .failed("设备信息不完整") }
         let deadline = Date().addingTimeInterval(Double(budgetMs) / 1000.0)
 
         // ① 设备上已有订单 → 直接恢复，不再下发
         if let using = try? await queryUsing(snCode: snCode) {
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
             if using.errorCode == 307 || (using.success && using.data?.orderNo != nil) {
                 // ⚠️ 有订单 ≠ 是你的订单，先看 isOwner
                 if using.data?.isOwner == false {
@@ -58,6 +61,7 @@ enum CloudShower {
         }
 
         // 恢复/通知不是开新阀的授权：查询失败或已无订单时不能申请费率。
+        guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
         guard allowNewOrder else { return .failed("未能确认原订单仍在使用，请刷新设备状态") }
 
         // ② 下发开阀
@@ -97,8 +101,10 @@ enum CloudShower {
                 break
             }
             try? await Task.sleep(nanoseconds: 700_000_000)
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
 
             guard let r = try? await downRateResult(snCode: snCode) else { continue }
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
             if r.success, let d = r.data, d.looksOpened {
                 opened = true
                 if let no = d.orderNo, !no.isEmpty { confirmedOrderNo = no }
@@ -130,6 +136,8 @@ enum CloudShower {
     }
 
     static func close(snCode: String, orderNo: String) async -> CloseOutcome {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
         guard !snCode.isEmpty else { return .failed("设备信息不完整") }
 
         // orderNo 必须**在关阀之前**敲定：关阀成功后订单就没了，queryUsing 再也问不出来
@@ -139,6 +147,7 @@ enum CloudShower {
         }
 
         let resp: APIResponse<EmptyData>
+        guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
         do {
             let data = try await ApiClient.post(
                 "/order/tcpDevice/closeOrder",
@@ -148,6 +157,7 @@ enum CloudShower {
             resp = try ApiClient.decodeShell(EmptyData.self, from: data, path: "closeOrder")
         } catch {
             // 请求本身失败 → 没有任何证据。再问一次服务端还开着没有
+            guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
             let running = await orderRunning(snCode: snCode)
             if running == true {
                 return .unconfirmed("关阀请求没发出去，设备可能还在用水")

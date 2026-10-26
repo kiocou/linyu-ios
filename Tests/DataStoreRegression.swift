@@ -53,6 +53,7 @@ struct DataStoreRegression {
         await DeviceControlRegression.run(check: check)
         await ParityBatchRegression.run(check: check)
         await DeviceAddressRegression.run(check: check)
+        await SessionIsolationRegression.run(check: check)
 
         if !failures.isEmpty { fatalError("Regression failures: \(failures.joined(separator: ", "))") }
     }

@@ -5,6 +5,7 @@ extension DeviceInfo { static func formatDeviceName(_ value: String) -> String {
 final class Session {
     static let shared = Session()
     var requestGeneration = UUID()
+    var isLoggedIn = true
     var projectId = "test-school"
     var authFields: [String: String] { ["loginCode": "test-only"] }
     var authQuery: [String: String] { authFields }
@@ -73,6 +74,14 @@ final class MockProtocol: URLProtocol {
             MockProtocol.failNetwork = false
         }
         let before = MockProtocol.requests
+        let expired = Session.shared.requestGeneration
+        Session.shared.requestGeneration = UUID()
+        let blocked = await SessionWork.$generation.withValue(expired) {
+            do { _ = try await ApiClient.post("/mock", form: [:]); return false }
+            catch is CancellationError { return true }
+            catch { return false }
+        }
+        check(blocked && MockProtocol.requests == before, "旧任务下一轮不能借用新账号凭证发请求")
         let cancelled = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             do { _ = try await ApiClient.get("/mock"); return false }

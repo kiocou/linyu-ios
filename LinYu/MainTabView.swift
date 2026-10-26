@@ -196,7 +196,13 @@ struct MainTabView: View {
         }
         .task { await store.loadProfileIfNeeded() }
         .task { await store.loadUseCode() }
-        .onDisappear { store.cancelRequests() }
+        .onDisappear {
+            store.cancelRequests()
+            if !Session.shared.isLoggedIn { flow.reset(); deduct.reset(); scanner.stop() }
+        }
+        .onChange(of: Session.shared.isLoggedIn) { loggedIn in
+            if !loggedIn { flow.reset(); deduct.reset(); store.cancelRequests(); scanner.stop() }
+        }
         .onChange(of: flow.settlementRevision) { _ in Task { await store.reload() } }
         // 订单变化（新开阀 / 被清掉）时同步监控任务
         .onChange(of: flow.restoredOrders) { _ in flow.startOrderWatch() }

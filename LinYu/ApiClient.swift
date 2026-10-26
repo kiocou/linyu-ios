@@ -59,6 +59,7 @@ struct ApiClient {
     ) async throws -> Data {
         try Task.checkCancellation()
         let generation = Session.shared.requestGeneration
+        try validateGeneration(generation)
         guard let url = URL(string: baseURL + path) else {
             throw ApiError.transport("URL 非法：\(path)")
         }
@@ -108,6 +109,7 @@ struct ApiClient {
     ) async throws -> Data {
         try Task.checkCancellation()
         let generation = Session.shared.requestGeneration
+        try validateGeneration(generation)
         var fields = form
         if withAuth {
             for (k, v) in Session.shared.authFields { fields[k] = v }
@@ -172,6 +174,7 @@ struct ApiClient {
     ) async throws -> Data {
         try Task.checkCancellation()
         let generation = Session.shared.requestGeneration
+        try validateGeneration(generation)
         guard var comps = URLComponents(string: baseURL + path) else {
             throw ApiError.transport("URL 非法：\(path)")
         }
@@ -219,6 +222,7 @@ struct ApiClient {
 
     private static func validateGeneration(_ generation: UUID) throws {
         try Task.checkCancellation()
+        if let inherited = SessionWork.generation, inherited != generation { throw CancellationError() }
         guard generation == Session.shared.requestGeneration else { throw CancellationError() }
     }
 
