@@ -40,6 +40,8 @@ jobs:
             LinYu/UserCardLayout.swift Tests/UserCardLayoutRegression.swift \
             LinYu/BleCallbackGuard.swift Tests/BleCallbackRegression.swift \
             LinYu/BleReplyBuffer.swift Tests/BleReplyBufferRegression.swift \
+            LinYu/NotificationPolicy.swift Tests/NotificationFeedbackRegression.swift \
+            LinYu/UseCodeQuotaStore.swift \
             LinYu/DeviceControlPolicy.swift LinYu/CloudShower.swift Tests/DeviceControlRegression.swift \
             Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
             Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \

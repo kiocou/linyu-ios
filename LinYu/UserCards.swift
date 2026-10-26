@@ -23,10 +23,12 @@ struct CollapsibleHeader: View {
     let onToggle: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
+        ZStack(alignment: .trailing) {
             Text(title)
                 .font(.system(size: 13))
                 .foregroundStyle(colors.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
             Image(systemName: expanded ? "chevron.up" : "chevron.down")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(colors.accent)
@@ -137,6 +139,7 @@ struct UseCodeCardView: View {
     @State private var errorText: String?
     @State private var localCodeOn = false
     private var code: String { store.useCode?.useCode ?? "" }
+    @State private var blockedReason: String?
     var body: some View {
         BaseCard {
             VStack(alignment: .leading, spacing: 0) {
@@ -181,7 +184,10 @@ struct UseCodeCardView: View {
                             .frame(maxWidth: .infinity)
                         Spacer().frame(height: 6)
                     }
-                    Button { presentation.dialog = .useCode } label: {
+                    Button {
+                        if let reason = store.useCodeBlockReason { blockedReason = reason }
+                        else { presentation.dialog = .useCode }
+                    } label: {
                         Text(code.isEmpty ? "领取使用码" : "重新领取")
                             .frame(maxWidth: .infinity)
                     }
@@ -198,6 +204,9 @@ struct UseCodeCardView: View {
         .alert("操作失败", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
             Button("知道了", role: .cancel) { errorText = nil }
         } message: { Text(errorText ?? "") }
+        .alert("无法领取", isPresented: Binding(get: { blockedReason != nil }, set: { if !$0 { blockedReason = nil } })) {
+            Button("知道了", role: .cancel) { blockedReason = nil }
+        } message: { Text(blockedReason ?? "") }
     }
 }
 
@@ -206,6 +215,9 @@ struct UseCodeCardView: View {
 /// 通知设置卡片 —— 逐条对照 Android `UserSettingsCards.NotifyCard`。
 struct NotifyCardView: View {
     @Environment(\.appColors) private var colors
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var notifications = AppNotifications.shared
 
     @State private var enabled = Prefs.notifyEnabled
     @State private var expanded = false
@@ -238,13 +250,19 @@ struct NotifyCardView: View {
                             Prefs.notifyEnabled = value
                             if value {
                                 Task {
-                                    if !(await AppNotifications.shared.requestPermission()) { enabled = false }
+                                    _ = await notifications.requestPermission()
+                                    notifications.settingsChanged()
                                 }
-                            } else { AppNotifications.shared.clear() }
+                            } else { notifications.settingsChanged() }
                         }
                 }
 
                 if enabled {
+                    if notifications.permissionDenied {
+                        Button("前往系统设置开启通知") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }.font(.system(size: 13)).foregroundStyle(colors.accent).padding(.top, 10)
+                    }
                     // ── 展开入口 ──
                     Button {
                         expanded.toggle()
@@ -266,13 +284,17 @@ struct NotifyCardView: View {
 
                     if expanded {
                         // 文案逐条照搬 Android 的 NotifyRow（标题 + 说明 + 开关靠右）
-                        notifyRow("用水状态通知", "使用期间在通知栏显示已用时间", $inUse) { Prefs.notifyInUse = $0 }
-                        notifyRow("使用结束通知", "停止后显示用时和消费金额", $finished) { Prefs.notifyFinished = $0 }
-                        notifyRow("自动关停提醒", "设备超时自己关闭时提醒", $autoClose) { Prefs.notifyAutoClose = $0 }
-                        notifyRow("横幅提醒", "开阀失败、设备被占用时从屏幕顶部弹出", $alert) { Prefs.notifyAlert = $0 }
+                        notifyRow("用水状态通知", "使用期间在通知栏显示已用时间", $inUse) { Prefs.notifyInUse = $0; notifications.settingsChanged() }
+                        notifyRow("使用结束通知", "停止后显示用时和消费金额", $finished) { Prefs.notifyFinished = $0; notifications.settingsChanged() }
+                        notifyRow("自动关停提醒", "设备超时自己关闭时提醒", $autoClose) { Prefs.notifyAutoClose = $0; notifications.settingsChanged() }
+                        notifyRow("横幅提醒", "开阀失败、设备被占用时从屏幕顶部弹出", $alert) { Prefs.notifyAlert = $0; notifications.settingsChanged() }
                     }
                 }
             }
+        }
+        .task { await notifications.refreshAuthorization() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { Task { await notifications.refreshAuthorization() } }
         }
     }
 

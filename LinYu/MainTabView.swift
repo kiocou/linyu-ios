@@ -34,7 +34,6 @@ struct MainTabView: View {
     @State private var refreshToken = 0
 
     var body: some View {
-        GeometryReader { geometry in
         ZStack(alignment: .bottom) {
             AppBackground(scope: flow.activeOrder != nil && !showerMinimized ? .shower : .home)
 
@@ -90,7 +89,7 @@ struct MainTabView: View {
                             withAnimation(Self.pageAnimation) { tab = newTab }
                         }
                     ), colors: backgrounds.colors(colors))
-                        .padding(.bottom, 22 + geometry.safeAreaInsets.bottom)
+                        .padding(.bottom, 22)
                         .padding(.horizontal, 24)
                         .transition(.identity)
                 }
@@ -155,6 +154,7 @@ struct MainTabView: View {
         .environment(\.appColors, backgrounds.colors(colors))
         .task {
             if Prefs.notifyEnabled { _ = await AppNotifications.shared.requestPermission() }
+            flow.refreshInUseNotifications()
         }
         // 把「扫到的 peripheral / central / 设备台账」交给业务层：
         // 首页「恢复订单」要重新走开阀流程，但 CoreBluetooth 只认 CBPeripheral，
@@ -180,6 +180,7 @@ struct MainTabView: View {
             if phase != .active { flow.stopOrderWatch() }
             guard phase == .active else { return }
             Task {
+                await AppNotifications.shared.refreshAuthorization()
                 // 先处理指定设备的停止请求，不让账单刷新延迟关阀。
                 await processNotificationActions()
                 await flow.reconcileOnResume()
@@ -190,6 +191,11 @@ struct MainTabView: View {
         }
         // 覆盖冷启动、前台点击通知，以及回调晚于 scenePhase 的情况。
         .onChange(of: notifications.actions) { _ in Task { await processNotificationActions() } }
+        .onChange(of: notifications.settingsRevision) { _ in flow.refreshInUseNotifications() }
+        .onChange(of: notifications.destinationTab) { target in
+            consumeNotificationDestination()
+        }
+        .task { consumeNotificationDestination() }
         .onChange(of: flow.isStarting) { busy in
             if !busy { Task { await processNotificationActions() } }
         }
@@ -220,7 +226,14 @@ struct MainTabView: View {
                 if flow.toast == msg { flow.toast = nil }
             }
         }
-        } // GeometryReader：外层保留安全区测量，内容层仍可延伸至屏幕底部。
+    }
+
+    private func consumeNotificationDestination() {
+        guard let target = notifications.destinationTab else { return }
+        showerMinimized = true
+        settingsVisible = false
+        tab = target
+        notifications.destinationTab = nil
     }
 
     @MainActor

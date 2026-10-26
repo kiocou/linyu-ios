@@ -5,6 +5,7 @@ enum SharedStoreSessionRegression {
         let originalGeneration = Session.shared.requestGeneration
         let owner = "store-session:" + UUID().uuidString
         defer {
+            UserDefaults.standard.removeObject(forKey: "useCodeQuota_" + owner)
             Session.shared.requestGeneration = originalGeneration
             ApiClient.onGet = nil
             ApiClient.onPost = nil
@@ -55,7 +56,8 @@ enum SharedStoreSessionRegression {
         ApiClient.onGet = nil
 
         let codes = AppDataStore(profileOwnerProvider: { owner })
-        codes.acceptUseCode("current-code")
+        ApiClient.getResponses["/account/useCode/new"] = #"{"success":true,"data":{"useCode":"current-code","resetAvailability":1}}"#
+        _ = await codes.loadUseCode()
         ApiClient.getResponses["/account/useCode/new"] = #"{"success":true,"data":null}"#
         let emptyRefresh = await codes.loadUseCode(force: true)
         check(emptyRefresh && codes.useCode?.useCode == "current-code", "成功空响应不抹掉已领取使用码")

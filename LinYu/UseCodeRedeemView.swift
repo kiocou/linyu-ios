@@ -14,7 +14,7 @@ struct UseCodeRedeemView: View {
     @State private var checking = true
     @State private var eligibilityLoaded = false
     @State private var retryToken = 0
-    private var unavailable: Bool { store.useCode?.resetAvailability == 0 }
+    private var unavailable: Bool { store.useCode?.resetAvailability == 0 || (candidate.isEmpty && store.useCodeQuotaExhausted) }
 
     private var title: String {
         eligibilityLoaded && unavailable ? "无法领取" : (store.useCode?.useCode?.isEmpty == false ? "重新领取使用码" : "领取使用码")
@@ -30,7 +30,7 @@ struct UseCodeRedeemView: View {
                         Text("获取失败，请重试")
                         Button("重试") { retryToken += 1 }
                     } else if unavailable {
-                        Text(store.useCode?.resetAvailabilityWarMark ?? "1天只能领取一次使用码")
+                        Text(store.useCodeBlockReason ?? "1天只能领取一次使用码")
                             .font(.system(size: 14)).foregroundStyle(colors.textPrimary)
                     } else {
                         if let current = store.useCode?.useCode, !current.isEmpty {
@@ -65,7 +65,7 @@ struct UseCodeRedeemView: View {
                                             Text(busy && !claiming ? "换码中" : (candidate.isEmpty ? "获取" : "换一个"))
                                                 .font(.system(size: 13))
                                         }.foregroundStyle(colors.accent).frame(minHeight: 44)
-                                    }.disabled(busy)
+                                    }.disabled(busy || store.useCodeQuotaExhausted)
                                 }
                                 if !candidate.isEmpty {
                                     Text(seconds == 0 ? "已超时，请重新换一个" : String(format: "请在 %d:%02d 内领取", seconds / 60, seconds % 60))
@@ -103,6 +103,7 @@ struct UseCodeRedeemView: View {
         else { eligibilityLoaded = await store.loadUseCode() }
         checking = false
         guard eligibilityLoaded, !unavailable, !Task.isCancelled else { return }
+        // 对照 Android LaunchedEffect(Unit)：允许领取时自动获取首个候选。
         await generate()
     }
 

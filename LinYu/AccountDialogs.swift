@@ -38,32 +38,20 @@ struct ChangePasswordDialog: View {
 
     private var canSubmit: Bool {
         if smsMode {
-            return phone.count == 11 && code.count >= 4 && newPwd.count >= 6 && newPwd == confirmPwd
+            return !code.isEmpty && !newPwd.isEmpty && !confirmPwd.isEmpty
         }
-        return oldPwd.count >= 6 && newPwd.count >= 6 && newPwd == confirmPwd
+        return !oldPwd.isEmpty && !newPwd.isEmpty && !confirmPwd.isEmpty
     }
 
     var body: some View {
         DialogScrim(onTapOutside: { if !submitting { onDismiss() } }) {
             AlertCard(title: "修改密码", titleAlign: .leading) {
                 VStack(alignment: .leading, spacing: 10) {
-                    // 模式切换
-                    Button {
-                        smsMode.toggle()
-                        errorText = nil
-                    } label: {
-                        Text(smsMode ? "使用当前密码修改" : "使用验证码修改")
-                            .font(.system(size: 13))
-                            .foregroundStyle(colors.accent)
-                    }
-                    .buttonStyle(InstantButtonStyle())
-                    .disabled(submitting || sending)
+                    Text("当前手机号：\(currentPhone)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(colors.textSecondary)
 
                     if smsMode {
-                        Text("当前手机号：\(currentPhone)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(colors.textSecondary)
-
                         dialogField("手机号", text: $phone, keyboard: .numberPad).disabled(true)
 
                         HStack(spacing: 10) {
@@ -88,6 +76,17 @@ struct ChangePasswordDialog: View {
 
                     dialogField("新密码", text: $newPwd, keyboard: .default, secured: true)
                     dialogField("确认新密码", text: $confirmPwd, keyboard: .default, secured: true)
+
+                    Button {
+                        smsMode.toggle()
+                        errorText = nil
+                    } label: {
+                        Text(smsMode ? "直接修改密码" : "短信验证修改密码")
+                            .font(.system(size: 12))
+                            .foregroundStyle(colors.accent)
+                    }
+                    .buttonStyle(InstantButtonStyle())
+                    .disabled(submitting)
 
                     if newPwd != confirmPwd, !confirmPwd.isEmpty {
                         Text("两次输入的新密码不一致")
@@ -139,6 +138,7 @@ struct ChangePasswordDialog: View {
 
     private func submit() async {
         guard canSubmit, !submitting else { return }
+        guard newPwd == confirmPwd else { errorText = "两次输入的新密码不一致"; return }
         submitting = true
         errorText = nil
         defer { submitting = false }

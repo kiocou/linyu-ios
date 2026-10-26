@@ -46,6 +46,17 @@ final class AppDataStore: ObservableObject {
     private var profileTask: Task<Void, Never>?
     private var useCodeTask: Task<Bool, Never>?
     private var useCodeRevision = 0
+    @Published private(set) var useCodeRemaining: Int?
+    private var useCodeQuotaDate: Date?
+    var useCodeQuotaExhausted: Bool {
+        useCodeRemaining == 0 && useCodeQuotaDate.map { Calendar.current.isDateInToday($0) } == true
+    }
+    var useCodeBlockReason: String? {
+        if useCode?.resetAvailability == 0 {
+            return useCode?.resetAvailabilityWarMark ?? "1天只能领取一次使用码"
+        }
+        return useCodeQuotaExhausted ? "今日换码次数已用完，请明天再试" : nil
+    }
     private var billsTask: Task<Void, Never>?
     private var profileRefreshed = false
     private var billsRefreshed = false
@@ -64,6 +75,10 @@ final class AppDataStore: ObservableObject {
     }) {
         currentProfileOwner = profileOwnerProvider
         profileOwner = profileOwnerProvider()
+        if let quota = UseCodeQuotaStore.read(owner: profileOwner) {
+            useCodeRemaining = quota.remaining
+            useCodeQuotaDate = quota.date
+        }
         if let cached = BillHistoryCache.read(owner: profileOwner) {
             bills = cached
             loaded = true
@@ -164,12 +179,16 @@ final class AppDataStore: ObservableObject {
     /// Android MainViewModel.generateUseCode：候选码不改变当前生效码。
     func generateUseCode() async throws -> GeneratedUseCode {
         guard sessionIsCurrent else { throw CancellationError() }
+        if let reason = useCodeBlockReason { throw ApiError.transport(reason) }
         let raw = try await ApiClient.post("/account/useCode/new/generate", form: [:], tag: "generateUseCode")
         guard sessionIsCurrent else { throw CancellationError() }
         let response = try ApiClient.decode(GeneratedUseCode.self, from: raw, path: "generateUseCode")
         guard let result = response.data, let code = result.useCode, !code.isEmpty else {
             throw ApiError.transport("换码失败，请重试")
         }
+        useCodeRemaining = max(0, result.remainTimes ?? 0)
+        useCodeQuotaDate = Date()
+        UseCodeQuotaStore.save(owner: profileOwner, remaining: useCodeRemaining ?? 0)
         return result
     }
 

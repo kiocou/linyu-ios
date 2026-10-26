@@ -97,6 +97,7 @@ final class ShowerFlow: ObservableObject {
     @Published private(set) var restoredOrders: [ActiveOrderRecord] = []
     /// 「正在开启」弹窗是否显示
     @Published private(set) var isStarting = false
+    private var openingOccupied = false
     /// 开启进度文案（蓝牙表要好几步，不给进度用户会以为卡死）
     @Published private(set) var openingText = ""
     /// 开阀失败文案（非 nil 就弹窗）
@@ -268,8 +269,14 @@ final class ShowerFlow: ObservableObject {
         }
         guard let token = beginControl() else { return }
         isStarting = true
+        errorMessage = nil
+        openingOccupied = false
         defer { isStarting = false; openingText = ""; controlGate.finish(token) }
         await performOpen(device: device, peripheral: peripheral, central: central, allowNewOrder: true)
+        if workScope.isCurrent, let message = errorMessage {
+            AppNotifications.shared.openProblem(device: device.displayName, snCode: device.snCode ?? "",
+                                                reason: message, occupied: openingOccupied)
+        }
     }
 
     private func performOpen(device: DeviceInfo, peripheral: CBPeripheral?, central: CBCentralManager?, allowNewOrder: Bool) async {
@@ -367,6 +374,7 @@ final class ShowerFlow: ObservableObject {
             toast = "已恢复进行中的订单"
 
         case .inUseByOthers:
+            openingOccupied = true
             mqtt.disconnect()
             errorMessage = "该设备正在被他人使用"
 
@@ -491,6 +499,7 @@ final class ShowerFlow: ObservableObject {
                 return
             }
             ble.disconnect()
+            openingOccupied = true
             errorMessage = "设备正在被使用（state=\(st.state)）"
             return
         }
@@ -1003,6 +1012,7 @@ final class ShowerFlow: ObservableObject {
 
     private func tick() {
         guard workScope.isCurrent else { reset(); return }
+        refreshInUseNotifications()
         guard let order = activeOrder else { return }
         objectWillChange.send()
 
@@ -1018,6 +1028,17 @@ final class ShowerFlow: ObservableObject {
             pendingAutoClose = true
             AppLog.shared.i("到达自动关停时间（\(order.autoDisConSec)s），主动关阀")
             Task { await close() }
+        }
+    }
+
+    /// 普通通知更新已确认订单的计时快照，不虚构后台实时监控或自动关阀事件。
+    func refreshInUseNotifications() {
+        guard workScope.isCurrent else { return }
+        for record in ActiveOrderStore.all() {
+            let start = Prefs.startedAt(record.snCode)
+            guard start > 0 else { continue }
+            AppNotifications.shared.inUse(device: record.deviceName, snCode: record.snCode,
+                orderNo: record.orderNo, startedAt: start)
         }
     }
 

@@ -63,6 +63,7 @@ struct DataStoreRegression {
         UserCardLayoutRegression.run(check: check)
         BleCallbackRegression.run(check: check)
         BleReplyBufferRegression.run(check: check)
+        await NotificationFeedbackRegression.run(check: check)
 
         if !failures.isEmpty { fatalError("Regression failures: \(failures.joined(separator: ", "))") }
     }
