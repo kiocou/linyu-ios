@@ -146,7 +146,8 @@ struct MainTabView: View {
         .overlay {
             UserDialogs(scanner: scanner,
                         onRoomSelected: { flow.toast = "已绑定寝室：\($0)" },
-                        onUseCodeRedeemed: { flow.toast = "使用码已更新" })
+                        onUseCodeRedeemed: { flow.toast = "使用码已更新" },
+                        onAccountChanged: { flow.toast = $0 })
         }
         .environmentObject(store)
         .environmentObject(userPresentation)

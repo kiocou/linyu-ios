@@ -1,6 +1,12 @@
 import Foundation
 
 enum ApiError: Error { case transport(String); case unauthorized(status: Int) }
+final class Session {
+    static let shared = Session()
+    var isLoggedIn = true
+    var projectId = "test-school"
+    var accountId = "test-account"
+}
 enum Prefs {
     static var campusBalance = ""
     static var walletBalance = ""
@@ -19,6 +25,8 @@ final class AppLog {
     func e(_ text: String, _ detail: String?) {}
 }
 enum ApiClient {
+    static var getResponses: [String: String] = [:]
+    static var getPaths: [String] = []
     static var failBills = false
     static var emptyBills = false
     static var failingMonth: String?
@@ -32,6 +40,8 @@ enum ApiClient {
         defer { activeRequests -= 1 }
         try Task.checkCancellation()
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+        getPaths.append(path)
+        if let response = getResponses[path] { return Data(response.utf8) }
         if path.contains("bill/list") {
             if failBills { throw URLError(.notConnectedToInternet) }
             let month = query["month"] ?? ""

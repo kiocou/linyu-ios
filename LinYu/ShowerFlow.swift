@@ -499,17 +499,9 @@ final class ShowerFlow: ObservableObject {
 
         let rateData: Data
         do {
-            rateData = try await ApiClient.post("/order/downRate/bluetooth/rateOrder", form: [
-                "deviceId": deviceId,
-                "macAddress": expectMac,
-                "macType": macType,
-                "bigTypeId": String(device.bigTypeId ?? 4),
-                "smallTypeId": String(device.smallTypeId ?? 1),
-                "protocolType": st.protocolType,
-                "randomNumber": st.randomNumber,
-                "xfModel": xfModel,
-                "signature": signature,
-            ], tag: "rateOrder")
+            rateData = try await ApiClient.post("/order/downRate/bluetooth/rateOrder", form:
+                BleRequestFields.rate(device: device, deviceId: deviceId, mac: expectMac,
+                                      macType: macType, state: st, xfModel: xfModel, signature: signature), tag: "rateOrder")
         } catch {
             ble.disconnect()
             errorMessage = "申请费率失败：\(error.localizedDescription)"
@@ -788,12 +780,9 @@ final class ShowerFlow: ObservableObject {
         }
 
         do {
-            let data = try await ApiClient.post("/order/upload/bluetooth/data", form: [
-                "protocolType": protocolType,
-                "randomNumber": randomNumber,
-                "xfData": xfData,
-                "signature": sig,
-            ], tag: "upload")
+            let data = try await ApiClient.post("/order/upload/bluetooth/data", form:
+                BleRequestFields.upload(protocolType: protocolType, randomNumber: randomNumber,
+                                        xfData: xfData, signature: sig), tag: "upload")
             // ⚠️ 必须用 decodeShell：206/209 是「已受理」的**成功码**，
             // 走 decode 会被当成异常，结算被误判失败、订单被上报作废。
             let resp = try ApiClient.decodeShell(BluetoothUploadData.self, from: data, path: "bluetoothUpload")

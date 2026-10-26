@@ -45,9 +45,25 @@ final class AppDataStore: ObservableObject {
     private var profileTask: Task<Void, Never>?
     private var useCodeTask: Task<Bool, Never>?
     private var billsTask: Task<Void, Never>?
+    private var profileRefreshed = false
+    private let profileOwner: String
+    private let currentProfileOwner: () -> String
+
+    init(profileOwnerProvider: @escaping () -> String = {
+        let session = Session.shared
+        return session.isLoggedIn ? session.projectId + ":" + session.accountId : ""
+    }) {
+        currentProfileOwner = profileOwnerProvider
+        profileOwner = profileOwnerProvider()
+        if let cached = ProfileCache.read(owner: profileOwner) {
+            accountInfo = cached.info
+            projectName = cached.projectName
+            profileLoaded = true
+        }
+    }
 
     func loadProfileIfNeeded() async {
-        guard !profileLoaded else { return }
+        guard !profileRefreshed, !profileOwner.isEmpty, currentProfileOwner() == profileOwner else { return }
         if let profileTask { await profileTask.value; return }
         let task = Task { @MainActor in
             defer { self.profileTask = nil }
@@ -55,14 +71,29 @@ final class AppDataStore: ObservableObject {
             async let account = BillService.loadAccountInfo()
             async let project = BillService.loadProjectInfo()
             let (accountResult, projectResult) = await (account, project)
-            guard !Task.isCancelled else { return }
-            guard let accountResult, let projectResult else {
-                self.profileError = "获取个人信息失败，请重试"
-                return
+            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            var merged = accountResult ?? self.accountInfo ?? .empty
+            var identitySourceLoaded = accountResult != nil
+            if merged.needsIdentity, let bound = await BillService.loadBindCardInfo() {
+                identitySourceLoaded = true
+                merged.fillIdentity(name: bound.name, studentId: bound.idCardNumber)
             }
-            self.accountInfo = accountResult
-            self.projectName = projectResult.projectName ?? ""
-            self.profileLoaded = true
+            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            if merged.needsIdentity, let campus = await BillService.loadCampusInfo() {
+                identitySourceLoaded = true
+                merged.fillIdentity(name: campus.studentName, studentId: campus.studentNumber)
+            }
+            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            // 新响应缺字段不抹掉已知资料；有效的新账号响应优先于旧缓存。
+            merged.fillIdentity(name: self.accountInfo?.name, studentId: self.accountInfo?.idCardNumber)
+            self.accountInfo = merged
+            if let name = projectResult?.projectName, !name.isEmpty { self.projectName = name }
+            self.profileRefreshed = identitySourceLoaded && projectResult != nil
+            self.profileLoaded = self.profileLoaded || identitySourceLoaded || projectResult != nil
+            if self.profileLoaded {
+                ProfileCache.save(owner: self.profileOwner, info: merged, projectName: self.projectName)
+            }
+            if !self.profileRefreshed { self.profileError = "获取个人信息失败，请重试" }
         }
         profileTask = task
         await task.value

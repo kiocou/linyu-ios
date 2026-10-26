@@ -157,6 +157,10 @@ enum BillService {
         await fetch(ProjectInfo.self, path: "/project/info/triple", tag: "projectInfo")?.data
     }
 
+    static func loadBindCardInfo() async -> AccountInfo? {
+        await fetch(AccountInfo.self, path: "/account/card/getBindCardInfo", tag: "bindCardInfo")?.data
+    }
+
     // MARK: - 未支付账单 / 手动代扣
 
     /// 未支付账单列表（残留账单）
@@ -195,8 +199,8 @@ enum BillService {
         guard !Task.isCancelled else { return }
         if let w = await loadWallet() {
             guard !Task.isCancelled else { return }
-            // accountRealMoney 是数字、money 是字符串，统一走 AnyNumber 后取 Double
-            let v = w.realYuan ?? w.moneyYuan
+            // Android refreshWallet：money 已是元，accountRealMoney 为厘，不能混用。
+            let v = w.moneyYuan
             Prefs.walletBalance = v.map { String($0) } ?? ""
             AppLog.shared.i("钱包余额：\(v.map { String($0) } ?? "空")")
         }

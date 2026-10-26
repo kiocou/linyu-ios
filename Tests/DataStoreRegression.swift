@@ -51,6 +51,7 @@ struct DataStoreRegression {
         SettlementRegression.run(check: check)
         CoreLogicRegression.run(check: check)
         await DeviceControlRegression.run(check: check)
+        await ParityBatchRegression.run(check: check)
 
         if !failures.isEmpty { fatalError("Regression failures: \(failures.joined(separator: ", "))") }
     }

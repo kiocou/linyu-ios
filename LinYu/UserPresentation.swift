@@ -19,6 +19,7 @@ struct UserDialogs: View {
     @ObservedObject var scanner: BLEScanner
     let onRoomSelected: (String) -> Void
     var onUseCodeRedeemed: () -> Void = {}
+    var onAccountChanged: (String) -> Void = { _ in }
     private var rooms: [String] {
         Array(Set(scanner.devices.compactMap { device in
             guard let sn = device.parsedSnCode, let name = store.deviceInfos[sn]?.deviceName else { return nil }
@@ -28,9 +29,12 @@ struct UserDialogs: View {
     var body: some View {
         switch presentation.dialog {
         case .phone:
-            ChangePhoneDialog(currentPhone: Session.shared.telephone) { presentation.dialog = nil }
+            ChangePhoneDialog(currentPhone: Session.shared.telephone,
+                              onDismiss: { presentation.dialog = nil },
+                              onSuccess: { onAccountChanged("手机号已更换") })
         case .password:
-            ChangePasswordDialog(currentPhone: Session.shared.telephone) { presentation.dialog = nil }
+            ChangePasswordDialog(currentPhone: Session.shared.telephone,
+                                 onSuccess: { onAccountChanged("密码已修改") }) { presentation.dialog = nil }
         case .useCode:
             UseCodeRedeemView(onDismiss: { presentation.dialog = nil }, onRedeemed: onUseCodeRedeemed)
         case .room:

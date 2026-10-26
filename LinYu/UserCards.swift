@@ -78,10 +78,6 @@ struct AccountCardView: View {
                         InfoRow(label: label, value: "加载中...")
                             .redacted(reason: .placeholder)
                     }
-                    if let error = store.profileError {
-                        Button(error) { Task { await store.loadProfileIfNeeded() } }
-                            .font(.system(size: 12)).foregroundStyle(colors.accent)
-                    }
                 } else {
                 if let name = info?.name, !name.isEmpty {
                     InfoRow(label: "姓名", value: name)
@@ -93,6 +89,11 @@ struct AccountCardView: View {
                 if let sid = info?.idCardNumber, !sid.isEmpty {
                     InfoRow(label: "学号", value: sid)
                 }
+                }
+
+                if let error = store.profileError {
+                    Button(error) { Task { await store.loadProfileIfNeeded() } }
+                        .font(.system(size: 12)).foregroundStyle(colors.accent)
                 }
 
                 Divider().overlay(colors.border)

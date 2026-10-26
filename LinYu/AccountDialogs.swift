@@ -14,6 +14,7 @@ struct ChangePasswordDialog: View {
     @Environment(\.appColors) private var colors
     let currentPhone: String
     let onDismiss: () -> Void
+    var onSuccess: () -> Void = {}
 
     /// false = 知道当前密码；true = 走短信验证码
     @State private var smsMode = false
@@ -28,8 +29,9 @@ struct ChangePasswordDialog: View {
     @State private var submitting = false
     @State private var errorText: String?
 
-    init(currentPhone: String, onDismiss: @escaping () -> Void) {
+    init(currentPhone: String, onSuccess: @escaping () -> Void = {}, onDismiss: @escaping () -> Void) {
         self.currentPhone = currentPhone
+        self.onSuccess = onSuccess
         self.onDismiss = onDismiss
         _phone = State(initialValue: currentPhone)
     }
@@ -162,6 +164,7 @@ struct ChangePasswordDialog: View {
             }
             _ = try ApiClient.decode(EmptyData.self, from: raw, path: "changePassword")
             SavedCredential.save(phone: currentPhone, password: newPwd)
+            onSuccess()
             onDismiss()
         } catch {
             errorText = "修改失败：\(error.localizedDescription)"
@@ -202,6 +205,7 @@ struct ChangePhoneDialog: View {
     @Environment(\.appColors) private var colors
     let currentPhone: String
     let onDismiss: () -> Void
+    var onSuccess: () -> Void = {}
 
     @State private var newPhone = ""
     @State private var code = ""
@@ -301,6 +305,7 @@ struct ChangePhoneDialog: View {
             SavedCredential.clear()
             // 认证参数里的 telephone 也得跟着换，否则后续请求还在用旧号
             Session.shared.updateTelephone(newPhone)
+            onSuccess()
             onDismiss()
         } catch {
             errorText = "更换失败：\(error.localizedDescription)"

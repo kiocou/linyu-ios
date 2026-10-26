@@ -168,7 +168,6 @@ struct WalletData: Decodable {
     let accountGivenMoney: AnyNumber?
     let money: AnyNumber?
 
-    var realYuan: Double? { accountRealMoney?.value }
     var moneyYuan: Double? { money?.value }
 }
 
@@ -266,9 +265,9 @@ struct UnpaidBill: Decodable, Identifiable {
 }
 
 /// `/account/info`
-struct AccountInfo: Decodable {
-    let name: String?
-    let idCardNumber: String?
+struct AccountInfo: Codable {
+    var name: String?
+    var idCardNumber: String?
     let telephone: String?
     let genderName: String?
     let cardStatus: Int?

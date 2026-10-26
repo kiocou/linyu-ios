@@ -77,6 +77,7 @@ final class Session: ObservableObject {
     }
 
     func logout(preserveActiveRecovery: Bool = false) {
+        ProfileCache.clear()
         loginCode = ""
         userId = ""
         accountId = ""

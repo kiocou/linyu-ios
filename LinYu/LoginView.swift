@@ -18,6 +18,8 @@ struct LoginView: View {
     @State private var busy = false
     @State private var errorText: String?
     @State private var countdown = 0
+    @State private var countdownTask: Task<Void, Never>?
+    @State private var smsTask: Task<Void, Never>?
     @StateObject private var systemPasswords = SystemPasswordPicker()
 
     private var canSubmit: Bool {
@@ -75,6 +77,13 @@ struct LoginView: View {
             if password.isEmpty, let saved = SavedCredential.password { password = saved }
             if !password.isEmpty { isSmsMode = false }
         }
+        .onDisappear {
+            countdownTask?.cancel()
+            smsTask?.cancel()
+            countdown = 0
+            password = ""
+            smsCode = ""
+        }
     }
 
     // MARK: - Logo
@@ -120,6 +129,8 @@ struct LoginView: View {
             Button {
                 isSmsMode.toggle()
                 errorText = nil
+                password = ""
+                smsCode = ""
             } label: {
                 Text(isSmsMode ? "密码登录" : "验证码登录")
                     .font(.system(size: 13))
@@ -307,24 +318,32 @@ struct LoginView: View {
     // MARK: - 动作
 
     private func sendCode() {
-        guard phone.count == 11 else { return }
+        guard phone.count == 11, countdown == 0 else { return }
+        let requestedPhone = phone
+        errorText = nil
         countdown = 60
         startCountdown()
-        Task {
+        smsTask = Task { @MainActor in
             do {
-                try await AuthService.sendSmsCode(phone: phone)
+                try await AuthService.sendSmsCode(phone: requestedPhone)
             } catch {
+                guard !Task.isCancelled else { return }
+                countdownTask?.cancel()
+                countdown = 0
                 errorText = Self.friendly(error)
             }
         }
     }
 
     private func startCountdown() {
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            if countdown <= 0 {
-                timer.invalidate()
-            } else {
-                countdown -= 1
+        countdownTask?.cancel()
+        let deadline = Date().addingTimeInterval(60)
+        countdownTask = Task { @MainActor in
+            while countdown > 0 {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                countdown = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
             }
         }
     }
@@ -333,15 +352,21 @@ struct LoginView: View {
         guard !busy else { return }
         busy = true
         errorText = nil
+        let submittedPhone = phone
+        let submittedPassword = password
+        let submittedCode = smsCode
+        let submittedSmsMode = isSmsMode
         Task {
             defer { busy = false }
             do {
-                let data = isSmsMode
-                    ? try await AuthService.smsLogin(phone: phone, smsCode: smsCode)
-                    : try await AuthService.login(phone: phone, password: password)
+                let data = submittedSmsMode
+                    ? try await AuthService.smsLogin(phone: submittedPhone, smsCode: submittedCode)
+                    : try await AuthService.login(phone: submittedPhone, password: submittedPassword)
                 // 验证码是一次性的，只有密码登录才存——下次打开自动填好，一键登录
-                if !isSmsMode { SavedCredential.save(phone: phone, password: password) }
-                AuthService.persist(data, phone: phone)
+                if !submittedSmsMode { SavedCredential.save(phone: submittedPhone, password: submittedPassword) }
+                password = ""
+                smsCode = ""
+                AuthService.persist(data, phone: submittedPhone)
             } catch {
                 errorText = Self.friendly(error)
             }
@@ -349,8 +374,6 @@ struct LoginView: View {
     }
 
     private static func friendly(_ e: Error) -> String {
-        let s = e.localizedDescription
-        if s.contains("登录") || s.contains("密码") || s.contains("验证码") { return s }
-        return "登录失败：\(s)"
+        LoginFeedback.message(e)
     }
 }
