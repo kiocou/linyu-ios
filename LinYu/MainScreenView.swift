@@ -429,6 +429,7 @@ struct MainScreenView: View {
                         .foregroundStyle(colors.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Text(sigLabel)
                         .font(.system(size: 13))
                         .foregroundStyle(sigColor)
@@ -436,7 +437,7 @@ struct MainScreenView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(colors.textSecondary)
                 }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 14, weight: .medium))

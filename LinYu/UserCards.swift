@@ -178,6 +178,8 @@ struct UseCodeCardView: View {
                 CollapsibleHeader(title: code.isEmpty ? "领取使用码" : "重新领取", expanded: redeemExpanded) {
                     redeemExpanded.toggle()
                 }
+                .padding(.top, 10)
+                .padding(.bottom, redeemExpanded ? 10 : 0)
                 if redeemExpanded {
                     if store.useCode?.resetAvailability == 0, let warning = store.useCode?.resetAvailabilityWarMark {
                         Text(warning).font(.system(size: 11)).foregroundStyle(colors.textSecondary)
@@ -258,7 +260,10 @@ struct NotifyCardView: View {
                 }
 
                 if enabled {
-                    if notifications.permissionDenied {
+                    if let error = notifications.authorizationError {
+                        Text(error).font(.system(size: 12)).foregroundStyle(colors.danger).padding(.top, 10)
+                    }
+                    if notifications.permissionDenied || notifications.authorizationError != nil {
                         Button("前往系统设置开启通知") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                         }.font(.system(size: 13)).foregroundStyle(colors.accent).padding(.top, 10)
@@ -288,6 +293,12 @@ struct NotifyCardView: View {
                         notifyRow("使用结束通知", "停止后显示用时和消费金额", $finished) { Prefs.notifyFinished = $0; notifications.settingsChanged() }
                         notifyRow("自动关停提醒", "设备超时自己关闭时提醒", $autoClose) { Prefs.notifyAutoClose = $0; notifications.settingsChanged() }
                         notifyRow("横幅提醒", "开阀失败、设备被占用时从屏幕顶部弹出", $alert) { Prefs.notifyAlert = $0; notifications.settingsChanged() }
+                        Button("发送测试通知") {
+                            Task { await notifications.sendTestNotification() }
+                        }.font(.system(size: 13)).foregroundStyle(colors.accent).padding(.top, 10)
+                        if let result = notifications.testResult {
+                            Text(result).font(.system(size: 12)).foregroundStyle(colors.textSecondary).padding(.top, 6)
+                        }
                     }
                 }
             }

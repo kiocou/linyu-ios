@@ -27,5 +27,15 @@ enum NotificationFeedbackRegression {
         check(UseCodeQuotaStore.read(owner: owner + "other") == nil, "不同账号不共用换码额度")
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
         check(UseCodeQuotaStore.read(owner: owner, now: tomorrow) == nil, "跨日不沿用昨日次数耗尽记录")
+        let rejectedOwner = "quota-error:" + UUID().uuidString
+        defer { UserDefaults.standard.removeObject(forKey: "useCodeQuota_" + rejectedOwner) }
+        let rejected = AppDataStore(profileOwnerProvider: { rejectedOwner })
+        ApiClient.postResponse = #"{"success":false,"errorCode":79,"errorMessage":"使用码生成次数超出日限制次数","data":null}"#
+        do { _ = try await rejected.generateUseCode(); check(false, "服务端额度错误不能生成候选") }
+        catch { check(rejected.useCodeQuotaExhausted, "错误79也记录当日额度耗尽") }
+        check(AppDataStore(profileOwnerProvider: { rejectedOwner }).useCodeBlockReason != nil, "错误79持久化后重新进入仍拦截")
+        ApiClient.postPaths = []
+        do { _ = try await rejected.generateUseCode(); check(false, "错误79后不再请求换码") }
+        catch { check(ApiClient.postPaths.isEmpty, "错误79后的重复点击不调用接口") }
     }
 }

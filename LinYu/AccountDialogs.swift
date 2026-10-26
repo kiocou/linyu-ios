@@ -47,10 +47,6 @@ struct ChangePasswordDialog: View {
         DialogScrim(onTapOutside: { if !submitting { onDismiss() } }) {
             AlertCard(title: "修改密码", titleAlign: .leading) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("当前手机号：\(currentPhone)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(colors.textSecondary)
-
                     if smsMode {
                         dialogField("手机号", text: $phone, keyboard: .numberPad).disabled(true)
 

@@ -6,6 +6,8 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
     private let center = UNUserNotificationCenter.current()
     @Published private(set) var actions: [DeviceNotificationAction] = []
     @Published private(set) var permissionDenied = false
+    @Published private(set) var authorizationError: String?
+    @Published private(set) var testResult: String?
     @Published private(set) var settingsRevision = 0
     @Published var destinationTab: Int?
     private var inUseMinutes: [String: String] = [:]
@@ -60,9 +62,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         content.userInfo["kind"] = NotificationKind.inUse.rawValue
         content.sound = nil
         content.interruptionLevel = .passive
-        center.add(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: false), content: content, trigger: nil)) { error in
-            if let error { AppLog.shared.w("使用中通知发送失败：\(error.localizedDescription)") }
-        }
+        submit(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: false), content: content, trigger: nil))
     }
 
     /// 通知上的按钮点击 —— 排队保存原设备与订单身份，回到前台再执行。
@@ -95,15 +95,59 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
     }
     @MainActor func refreshAuthorization() async {
         let settings = await center.notificationSettings()
+        let wasDenied = permissionDenied
         permissionDenied = settings.authorizationStatus == .denied
+        AppLog.shared.i("通知设置：authorization=\(settings.authorizationStatus.rawValue), alert=\(settings.alertSetting.rawValue), sound=\(settings.soundSetting.rawValue), notificationCenter=\(settings.notificationCenterSetting.rawValue), lockScreen=\(settings.lockScreenSetting.rawValue), bundle=\(Bundle.main.bundleIdentifier ?? "unknown")")
+        if wasDenied && (settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional) {
+            authorizationError = nil
+            settingsChanged()
+        }
     }
     @MainActor func requestPermission() async -> Bool {
         do {
             let allowed = try await center.requestAuthorization(options: [.alert, .sound, .badge])
             await refreshAuthorization()
+            authorizationError = allowed ? nil : "系统未允许通知，请在系统设置中检查通知权限"
             return allowed
         }
-        catch { AppLog.shared.w("通知授权失败：\(error.localizedDescription)"); return false }
+        catch {
+            await refreshAuthorization()
+            recordFailure(error, operation: "通知授权")
+            return false
+        }
+    }
+
+    @MainActor private func recordFailure(_ error: Error, operation: String) {
+        let failure = error as NSError
+        AppLog.shared.w("\(operation)失败：domain=\(failure.domain), code=\(failure.code), \(failure.localizedDescription)")
+        if failure.domain == UNErrorDomain && failure.code == UNError.Code.notificationsNotAllowed.rawValue {
+            authorizationError = "系统拒绝通知，请检查通知权限。若使用 LiveContainer，请在该应用设置中开启修复本地通知后重启应用"
+        } else {
+            authorizationError = "通知失败（\(failure.domain) \(failure.code)），请重试或导出日志"
+        }
+    }
+
+    /// 所有通知统一记录系统拒绝原因，不能把 add() 无回调当作发送成功。
+    private func submit(_ request: UNNotificationRequest) {
+        center.add(request) { error in
+            guard let error else { return }
+            Task { @MainActor in self.recordFailure(error, operation: "通知发送") }
+        }
+    }
+
+    @MainActor func sendTestNotification() async {
+        testResult = nil
+        guard Prefs.notifyEnabled, await requestPermission() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "通知测试"
+        content.body = "这是一条测试通知，不会操作设备"
+        content.userInfo["test"] = true
+        content.sound = .default
+        content.interruptionLevel = .active
+        do {
+            try await center.add(UNNotificationRequest(identifier: "linyu.test", content: content, trigger: nil))
+            testResult = "已提交系统，请检查通知中心"
+        } catch { recordFailure(error, operation: "测试通知") }
     }
     func clear() {
         inUseMinutes.removeAll()
@@ -135,14 +179,15 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         content.body = "用时 \(duration) · " + (amount.map { $0 > 0 ? "消费 \(MoneyFormat.withSymbol($0))" : "无消费" } ?? "结算中")
         if automatic && Prefs.notifyAlert { content.sound = .default }
         content.interruptionLevel = automatic && Prefs.notifyAlert ? .active : .passive
-        center.add(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: true), content: content, trigger: nil)) { error in
-            if let error { AppLog.shared.w("通知发送失败：\(error.localizedDescription)") }
-        }
+        submit(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: true), content: content, trigger: nil))
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let kind = (notification.request.content.userInfo["kind"] as? String).flatMap(NotificationKind.init(rawValue:))
         guard kind.map(isEnabled) ?? Prefs.notifyEnabled else { completionHandler([]); return }
+        if notification.request.content.userInfo["test"] as? Bool == true {
+            completionHandler([.banner, .list, .sound]); return
+        }
         if notification.request.content.userInfo["quietUpdate"] as? Bool == true {
             completionHandler([.list]); return
         }
@@ -160,7 +205,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         content.userInfo = ["accountKey": Self.accountKey, "kind": NotificationKind.closeProblem.rawValue]
         if Prefs.notifyAlert { content.sound = .default }
         content.interruptionLevel = Prefs.notifyAlert ? .active : .passive
-        center.add(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: true), content: content, trigger: nil))
+        submit(UNNotificationRequest(identifier: DeviceNotificationTarget.notificationID(snCode: snCode, finished: true), content: content, trigger: nil))
     }
 
     private func isEnabled(_ kind: NotificationKind) -> Bool {
@@ -196,7 +241,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
         content.threadIdentifier = "linyu.events." + Self.accountKey
         if Prefs.notifyAlert { content.sound = .default }
         content.interruptionLevel = Prefs.notifyAlert ? .active : .passive
-        center.add(UNNotificationRequest(identifier: "linyu.openProblem." + snCode, content: content, trigger: nil))
+        submit(UNNotificationRequest(identifier: "linyu.openProblem." + snCode, content: content, trigger: nil))
     }
 
     /// 只更正仍存在、确属该笔待对账的通知；不复活用户已划掉的通知。
@@ -224,7 +269,7 @@ final class AppNotifications: NSObject, ObservableObject, UNUserNotificationCent
                 content.sound = nil
                 content.interruptionLevel = .passive
                 content.userInfo["quietUpdate"] = true
-                self.center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+                self.submit(UNNotificationRequest(identifier: id, content: content, trigger: nil))
             }
         }
     }

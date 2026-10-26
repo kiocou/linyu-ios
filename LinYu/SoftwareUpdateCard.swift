@@ -114,7 +114,7 @@ struct SoftwareUpdateCard: View {
                 .buttonStyle(AccentButtonStyle(colors: colors, radius: 12, height: 44))
                 .disabled(releases.checking).padding(.top, 14)
                 Button { openURL(tutorialURL) } label: {
-                    Text("看教程").font(.system(size: 14)).foregroundStyle(colors.accent)
+                    Text("自签教程").font(.system(size: 14)).foregroundStyle(colors.accent)
                         .frame(maxWidth: .infinity).frame(height: 44)
                         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(colors.border))
                 }.buttonStyle(InstantButtonStyle()).padding(.top, 10)

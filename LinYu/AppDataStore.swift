@@ -182,7 +182,16 @@ final class AppDataStore: ObservableObject {
         if let reason = useCodeBlockReason { throw ApiError.transport(reason) }
         let raw = try await ApiClient.post("/account/useCode/new/generate", form: [:], tag: "generateUseCode")
         guard sessionIsCurrent else { throw CancellationError() }
-        let response = try ApiClient.decode(GeneratedUseCode.self, from: raw, path: "generateUseCode")
+        let response: APIResponse<GeneratedUseCode>
+        do {
+            response = try ApiClient.decode(GeneratedUseCode.self, from: raw, path: "generateUseCode")
+        } catch ApiError.business(79, let message) {
+            // 服务端可能已在其他客户端耗尽额度；不能只记录成功响应里的 remainTimes。
+            useCodeRemaining = 0
+            useCodeQuotaDate = Date()
+            UseCodeQuotaStore.save(owner: profileOwner, remaining: 0)
+            throw ApiError.transport(message)
+        }
         guard let result = response.data, let code = result.useCode, !code.isEmpty else {
             throw ApiError.transport("换码失败，请重试")
         }
