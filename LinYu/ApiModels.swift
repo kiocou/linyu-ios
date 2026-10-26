@@ -188,7 +188,7 @@ struct BillItem: Decodable {
     let consumeBillDTO: BillDTO?
 }
 
-struct BillDTO: Decodable, Identifiable {
+struct BillDTO: Codable, Identifiable {
     /// 账单**序号**（7 位），和 orderNo 不是一回事
     let orderId: String?
     let consumeDate: String?
@@ -358,6 +358,11 @@ struct ConsumeResultData: Decodable {
 ///
 /// ⚠️ 字段一律可空：**没领过码时服务端真的返回 `"useCode": null`**。
 /// 写成非可选会让整个响应解码失败，界面就永远停在「加载中」。
+struct GeneratedUseCode: Decodable {
+    let useCode: String?
+    let remainTimes: Int?
+}
+
 struct UseCodeData: Decodable {
     let useCode: String?
     /// 1 = 开启，0 = 关闭

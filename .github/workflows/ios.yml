@@ -34,6 +34,12 @@ jobs:
             LinYu/BleRequestFields.swift \
             LinYu/DeviceAddress.swift Tests/DeviceAddressRegression.swift \
             LinYu/SessionWork.swift LinYu/RecoveryArchive.swift LinYu/DeductService.swift Tests/SessionIsolationRegression.swift \
+            LinYu/BillHistoryCache.swift LinYu/BleRecoveryStore.swift LinYu/SettlementNoticePolicy.swift \
+            LinYu/LogRedactor.swift Tests/ParityFinishRegression.swift \
+            Tests/SharedStoreSessionRegression.swift \
+            LinYu/UserCardLayout.swift Tests/UserCardLayoutRegression.swift \
+            LinYu/BleCallbackGuard.swift Tests/BleCallbackRegression.swift \
+            LinYu/BleReplyBuffer.swift Tests/BleReplyBufferRegression.swift \
             LinYu/DeviceControlPolicy.swift LinYu/CloudShower.swift Tests/DeviceControlRegression.swift \
             Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
             Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \
@@ -43,6 +49,10 @@ jobs:
             LinYu/ApiModels.swift LinYu/ApiClient.swift LinYu/SessionWork.swift Tests/NetworkRegression.swift \
             -o "$RUNNER_TEMP/linyu-network-tests"
           "$RUNNER_TEMP/linyu-network-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/ApiModels.swift LinYu/DeviceInfoDisplay.swift Tests/DeviceDisplayRegression.swift \
+            -o "$RUNNER_TEMP/linyu-display-tests"
+          "$RUNNER_TEMP/linyu-display-tests"
 
       - name: 生成 Xcode 工程
         run: xcodegen generate

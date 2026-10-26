@@ -560,7 +560,7 @@ extension BLEScanner: CBCentralManagerDelegate {
         error: Error?
     ) {
         if let s = activeSession {
-            Task { @MainActor in s.handleDidFailToConnect(error) }
+            Task { @MainActor in s.handleDidFailToConnect(peripheral, error: error) }
             return
         }
         gattSummary = "❌ 连接失败：\(error?.localizedDescription ?? "未知原因")"
@@ -573,7 +573,7 @@ extension BLEScanner: CBCentralManagerDelegate {
         error: Error?
     ) {
         if let s = activeSession {
-            Task { @MainActor in s.handleDidDisconnect(error) }
+            Task { @MainActor in s.handleDidDisconnect(peripheral, error: error) }
             return
         }
         if connectedId != nil {

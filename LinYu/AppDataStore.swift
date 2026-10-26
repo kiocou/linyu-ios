@@ -32,6 +32,7 @@ final class AppDataStore: ObservableObject {
     /// 设备列表会先闪回广播名（`KLCXKJ-Water`）再变回房间名。
     /// Android 那边这份数据在 MainViewModel 里，跨页面一直在。
     @Published private(set) var deviceInfos: [String: DeviceInfo] = [:]
+    @Published private(set) var deviceLookupMessages: [String: String] = [:]
     /// 正在查询的 snCode，避免同一台设备并发重复请求
     private var resolving: Set<String> = []
     private var retryAfter: [String: Date] = [:]
@@ -44,8 +45,16 @@ final class AppDataStore: ObservableObject {
     @Published private(set) var profileError: String?
     private var profileTask: Task<Void, Never>?
     private var useCodeTask: Task<Bool, Never>?
+    private var useCodeRevision = 0
     private var billsTask: Task<Void, Never>?
     private var profileRefreshed = false
+    private var billsRefreshed = false
+    var onBillsLoaded: (([BillDTO]) -> Void)?
+    private let generation = Session.shared.requestGeneration
+    private var requestsCancelled = false
+    private var sessionIsCurrent: Bool {
+        !requestsCancelled && SessionWork.isCurrent(generation) && currentProfileOwner() == profileOwner
+    }
     private let profileOwner: String
     private let currentProfileOwner: () -> String
 
@@ -55,6 +64,10 @@ final class AppDataStore: ObservableObject {
     }) {
         currentProfileOwner = profileOwnerProvider
         profileOwner = profileOwnerProvider()
+        if let cached = BillHistoryCache.read(owner: profileOwner) {
+            bills = cached
+            loaded = true
+        }
         if let cached = ProfileCache.read(owner: profileOwner) {
             accountInfo = cached.info
             projectName = cached.projectName
@@ -63,7 +76,7 @@ final class AppDataStore: ObservableObject {
     }
 
     func loadProfileIfNeeded() async {
-        guard !profileRefreshed, !profileOwner.isEmpty, currentProfileOwner() == profileOwner else { return }
+        guard sessionIsCurrent, !profileRefreshed, !profileOwner.isEmpty else { return }
         if let profileTask { await profileTask.value; return }
         let task = Task { @MainActor in
             defer { self.profileTask = nil }
@@ -71,19 +84,19 @@ final class AppDataStore: ObservableObject {
             async let account = BillService.loadAccountInfo()
             async let project = BillService.loadProjectInfo()
             let (accountResult, projectResult) = await (account, project)
-            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            guard self.sessionIsCurrent else { return }
             var merged = accountResult ?? self.accountInfo ?? .empty
             var identitySourceLoaded = accountResult != nil
             if merged.needsIdentity, let bound = await BillService.loadBindCardInfo() {
                 identitySourceLoaded = true
                 merged.fillIdentity(name: bound.name, studentId: bound.idCardNumber)
             }
-            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            guard self.sessionIsCurrent else { return }
             if merged.needsIdentity, let campus = await BillService.loadCampusInfo() {
                 identitySourceLoaded = true
                 merged.fillIdentity(name: campus.studentName, studentId: campus.studentNumber)
             }
-            guard !Task.isCancelled, self.currentProfileOwner() == self.profileOwner else { return }
+            guard self.sessionIsCurrent else { return }
             // 新响应缺字段不抹掉已知资料；有效的新账号响应优先于旧缓存。
             merged.fillIdentity(name: self.accountInfo?.name, studentId: self.accountInfo?.idCardNumber)
             self.accountInfo = merged
@@ -101,18 +114,23 @@ final class AppDataStore: ObservableObject {
 
     @discardableResult
     func loadUseCode(force: Bool = false) async -> Bool {
+        guard sessionIsCurrent else { return false }
         if let useCodeTask { return await useCodeTask.value }
         if !force && useCodeLoaded { return true }
+        let revision = useCodeRevision
         let task = Task { @MainActor in
             defer { self.useCodeTask = nil }
             do {
                 let raw = try await ApiClient.get("/account/useCode/new", tag: "useCode")
                 let result = try ApiClient.decode(UseCodeData.self, from: raw, path: "useCode").data
                 try Task.checkCancellation()
-                self.useCode = result
+                guard self.sessionIsCurrent, self.useCodeRevision == revision else { return false }
+                // Android 只在 data 非空时替换已有使用码；空响应不能抹掉刚领取的码。
+                if let result { self.useCode = result }
                 self.useCodeLoaded = true
                 return true
             } catch {
+                guard self.sessionIsCurrent else { return false }
                 AppLog.shared.w("使用码加载失败：\(error.localizedDescription)")
                 return false
             }
@@ -122,24 +140,58 @@ final class AppDataStore: ObservableObject {
     }
 
     func setUseCodeEnabled(_ enabled: Bool) async throws {
+        guard sessionIsCurrent else { throw CancellationError() }
         guard !changingUseCodeStatus else { return }
         changingUseCodeStatus = true
         defer { changingUseCodeStatus = false }
         let raw = try await ApiClient.post("/account/useCode/new/status/update",
             form: ["useCodeStatus": enabled ? "1" : "0"], tag: "useCodeStatus")
+        guard sessionIsCurrent else { throw CancellationError() }
         _ = try ApiClient.decode(EmptyData.self, from: raw, path: "useCodeStatus")
+        useCodeRevision += 1
         useCode?.useCodeStatus = enabled ? 1 : 0
     }
 
     func acceptUseCode(_ code: String) {
+        guard sessionIsCurrent else { return }
+        useCodeRevision += 1
         useCode = UseCodeData(useCode: code, useCodeStatus: useCode?.useCodeStatus,
             useCodeRandom: useCode?.useCodeRandom, useCodeStartTime: useCode?.useCodeStartTime,
             resetAvailability: 0, resetAvailabilityWarMark: "1天只能领取一次使用码")
         useCodeLoaded = true
     }
 
+    /// Android MainViewModel.generateUseCode：候选码不改变当前生效码。
+    func generateUseCode() async throws -> GeneratedUseCode {
+        guard sessionIsCurrent else { throw CancellationError() }
+        let raw = try await ApiClient.post("/account/useCode/new/generate", form: [:], tag: "generateUseCode")
+        guard sessionIsCurrent else { throw CancellationError() }
+        let response = try ApiClient.decode(GeneratedUseCode.self, from: raw, path: "generateUseCode")
+        guard let result = response.data, let code = result.useCode, !code.isEmpty else {
+            throw ApiError.transport("换码失败，请重试")
+        }
+        return result
+    }
+
+    /// 先确认领取成功，再后台刷新资格和启用状态；刷新失败保留已确认的新码。
+    func claimUseCode(_ code: String) async throws {
+        guard sessionIsCurrent else { throw CancellationError() }
+        guard !code.isEmpty else { throw ApiError.transport("领取失败，请重试") }
+        let raw = try await ApiClient.post("/account/useCode/new/set", form: ["useCode": code], tag: "setUseCode")
+        guard sessionIsCurrent else { throw CancellationError() }
+        _ = try ApiClient.decode(EmptyData.self, from: raw, path: "setUseCode")
+        acceptUseCode(code)
+        let pending = useCodeTask
+        Task { @MainActor in
+            // 旧查询即使稍后返回，也不能用领取前的码覆盖本次已确认结果。
+            if let pending { _ = await pending.value }
+            guard self.sessionIsCurrent else { return }
+            _ = await self.loadUseCode(force: true)
+        }
+    }
+
     func loadIfNeeded() async {
-        guard !loaded else { return }
+        guard !billsRefreshed else { return }
         await reload()
     }
 
@@ -150,12 +202,14 @@ final class AppDataStore: ObservableObject {
     /// （Android 实测日志里 13 秒对同一个 MAC 发了 35 次）。
     /// 直接写入一份台账结果（扫码绑定等已经拿到 DeviceInfo 的场景）
     func putDeviceInfo(_ info: DeviceInfo, sn: String) {
+        guard sessionIsCurrent else { return }
+        deviceLookupMessages[sn] = nil
         deviceInfos[sn] = info
         if let ledgerSN = info.snCode, !ledgerSN.isEmpty { deviceInfos[ledgerSN] = info }
     }
 
     func deviceInfo(_ sn: String) async {
-        guard !sn.isEmpty else { return }
+        guard sessionIsCurrent, !sn.isEmpty else { return }
         if deviceInfos[sn] != nil { return }
         if resolving.contains(sn) { return }
         if let retry = retryAfter[sn], retry > Date() { return }
@@ -164,14 +218,19 @@ final class AppDataStore: ObservableObject {
 
         do {
             let info = try await DeviceLookup.load(sn)
-            guard !Task.isCancelled, currentProfileOwner() == profileOwner else { return }
+            guard sessionIsCurrent else { return }
             if let info {
                 putDeviceInfo(info, sn: sn)
             } else {
+                deviceLookupMessages[sn] = "服务端没有这台设备的记录（\(sn)）"
                 retryAfter[sn] = Date().addingTimeInterval(60)
                 AppLog.shared.w("台账查不到 \(sn)（success=true 但 data 为空）")
             }
         } catch {
+            guard sessionIsCurrent else { return }
+            let message = LoginFeedback.message(error)
+            deviceLookupMessages[sn] = message.contains("网络") ? message : "获取设备信息失败，请稍后重试"
+            if case let ApiError.business(_, reason) = error { deviceLookupMessages[sn] = reason }
             retryAfter[sn] = Date().addingTimeInterval(10)
             AppLog.shared.w("台账请求失败 \(sn)：\(error.localizedDescription)")
         }
@@ -179,19 +238,25 @@ final class AppDataStore: ObservableObject {
 
     /// 显式刷新（下拉 / 结算完成后刷新账单）
     func reload() async {
+        guard sessionIsCurrent else { return }
         if let billsTask { await billsTask.value; return }
         loading = true
         let task = Task { @MainActor in
             defer { self.loading = false; self.billsTask = nil }
             self.billsError = nil
             await BillService.refreshBalances()
+            guard self.sessionIsCurrent else { return }
             do {
                 let result = try await BillService.loadHistoryChecked()
                 try Task.checkCancellation()
+                guard self.sessionIsCurrent else { return }
                 self.bills = result
                 self.loaded = true
+                self.billsRefreshed = true
+                BillHistoryCache.save(result, owner: self.profileOwner)
+                self.onBillsLoaded?(result)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard self.sessionIsCurrent else { return }
                 self.billsError = "获取账单失败，请重试"
                 AppLog.shared.w("账单刷新失败，保留已有数据：\(error.localizedDescription)")
             }
@@ -201,8 +266,15 @@ final class AppDataStore: ObservableObject {
     }
 
     func cancelRequests() {
+        // 与 Android sessionJob.cancel 一致：旧实例不允许再发请求或接受回调。
+        requestsCancelled = true
         billsTask?.cancel()
         profileTask?.cancel()
         useCodeTask?.cancel()
+    }
+
+    /// 系统页面遮盖不等于退出；只在原登录已失效时销毁共享缓存任务。
+    func cancelRequestsIfSessionEnded() {
+        if !sessionIsCurrent { cancelRequests() }
     }
 }

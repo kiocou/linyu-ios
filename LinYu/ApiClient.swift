@@ -10,6 +10,7 @@ enum ApiError: LocalizedError {
     case notLoggedIn
     /// HTTP 401 / 403 —— 会话已失效（被挤号或凭证过期）
     case unauthorized(status: Int)
+    case http(status: Int)
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,7 @@ enum ApiError: LocalizedError {
         case .transport(let msg): return msg
         case .notLoggedIn: return "未登录"
         case .unauthorized(let status): return "登录已失效（HTTP \(status)）"
+        case .http(let status): return "服务器请求失败（HTTP \(status)），请稍后重试"
         }
     }
 }
@@ -88,6 +90,7 @@ struct ApiClient {
             if code == 401 || code == 403 {
                 throw ApiError.unauthorized(status: code)
             }
+            guard (200..<300).contains(code) else { throw ApiError.http(status: code) }
             return data
         } catch is CancellationError {
             throw CancellationError()
@@ -154,6 +157,7 @@ struct ApiClient {
             if code == 401 || code == 403 {
                 throw ApiError.unauthorized(status: code)
             }
+            guard (200..<300).contains(code) else { throw ApiError.http(status: code) }
             return data
         } catch is CancellationError {
             throw CancellationError()
@@ -180,7 +184,7 @@ struct ApiClient {
         }
         var items = comps.queryItems ?? []
         for (k, v) in query { items.append(URLQueryItem(name: k, value: v)) }
-        if !path.contains("verification") {
+        if Session.shared.isLoggedIn && !path.contains("verification") {
             for (k, v) in Session.shared.authQuery {
                 items.append(URLQueryItem(name: k, value: v))
             }
@@ -206,6 +210,7 @@ struct ApiClient {
             if code == 401 || code == 403 {
                 throw ApiError.unauthorized(status: code)
             }
+            guard (200..<300).contains(code) else { throw ApiError.http(status: code) }
             return data
         } catch is CancellationError {
             throw CancellationError()
@@ -232,16 +237,15 @@ struct ApiClient {
             req.setValue(pid, forHTTPHeaderField: "Config-Project")
             req.setValue(configKeys, forHTTPHeaderField: "Config-Keys")
         }
-        req.setValue("android", forHTTPHeaderField: "phoneSystem")
     }
 
-    private static func encodeForm(_ fields: [String: String]) -> Data {
+    static func encodeForm(_ fields: [String: String]) -> Data {
         // 用 application/x-www-form-urlencoded 的规则：空格 → +，其余百分号编码
         var allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         allowed.insert(charactersIn: "*")
         let body = fields.map { k, v -> String in
-            let ek = k.addingPercentEncoding(withAllowedCharacters: allowed) ?? k
-            let ev = v.addingPercentEncoding(withAllowedCharacters: allowed) ?? v
+            let ek = (k.addingPercentEncoding(withAllowedCharacters: allowed) ?? k).replacingOccurrences(of: "%20", with: "+")
+            let ev = (v.addingPercentEncoding(withAllowedCharacters: allowed) ?? v).replacingOccurrences(of: "%20", with: "+")
             return "\(ek)=\(ev)"
         }.joined(separator: "&")
         return Data(body.utf8)

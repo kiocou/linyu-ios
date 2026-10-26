@@ -188,29 +188,6 @@ final class AppLog: ObservableObject {
 
     /// 手机号、loginCode、签名、密码一律打码
     static func mask(_ s: String) -> String {
-        var out = s
-        // 11 位手机号
-        out = out.replacingOccurrences(
-            of: #"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)"#,
-            with: "$1****$2",
-            options: .regularExpression
-        )
-        // 常见敏感字段：key=value 或 "key":"value"
-        let keys = ["loginCode", "password", "oldPassword", "useCode", "code", "smsCode", "signature", "token", "sign"]
-        for k in keys {
-            // form: key=xxx&
-            out = out.replacingOccurrences(
-                of: "(\(k)=)([^&\\s\"]+)",
-                with: "$1***",
-                options: .regularExpression
-            )
-            // json: "key":"xxx"
-            out = out.replacingOccurrences(
-                of: "(\"\(k)\"\\s*:\\s*\")([^\"]*)(\")",
-                with: "$1***$3",
-                options: .regularExpression
-            )
-        }
-        return out
+        LogRedactor.mask(s)
     }
 }

@@ -20,10 +20,12 @@ final class MockProtocol: URLProtocol {
     static var rotateSession = false
     static var failNetwork = false
     static var requests = 0
+    static var lastRequest: URLRequest?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.requests += 1
+        Self.lastRequest = request
         if Self.rotateSession { Session.shared.requestGeneration = UUID() }
         if Self.failNetwork {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
@@ -51,6 +53,18 @@ final class MockProtocol: URLProtocol {
             ("POST", { try await ApiClient.post("/mock", form: [:]) }),
             ("JSON", { try await ApiClient.postJSON("/mock", body: [:]) })
         ]
+        // 直接测试生产解析器：业务失败必须中断领取，但水控错误码仍可分支处理。
+        let rejected = Data(#"{"success":false,"errorCode":307,"errorMessage":"设备正在使用","data":null}"#.utf8)
+        do {
+            _ = try ApiClient.decode(DeviceInfo.self, from: rejected, path: "regression")
+            check(false, "严格解析必须拒绝业务失败")
+        } catch ApiError.business(let code, let message) {
+            check(code == 307 && message == "设备正在使用", "严格解析保留业务错误码和原文")
+        } catch { check(false, "严格解析业务错误类型") }
+        do {
+            let shell = try ApiClient.decodeShell(DeviceInfo.self, from: rejected, path: "regression")
+            check(!shell.success && shell.errorCode == 307, "水控外壳解析不吞掉307分支")
+        } catch { check(false, "外壳解析不应因业务失败抛错") }
         for (name, request) in methods {
             for status in [401, 403] {
                 MockProtocol.status = status
@@ -58,6 +72,10 @@ final class MockProtocol: URLProtocol {
                 catch ApiError.unauthorized(let actual) { check(actual == status, "\(name)保留HTTP \(status)类型") }
                 catch { check(false, "\(name)错误被包装: \(error)") }
             }
+            MockProtocol.status = 500
+            do { _ = try await request(); check(false, "\(name)HTTP500") }
+            catch ApiError.http(let status) { check(status == 500, "\(name)不把HTTP500成功JSON当业务成功") }
+            catch { check(false, "\(name)HTTP500类型") }
             MockProtocol.status = 200
             MockProtocol.rotateSession = true
             do { _ = try await request(); check(false, "\(name)过期响应") }
@@ -73,6 +91,15 @@ final class MockProtocol: URLProtocol {
             catch { check(false, "\(name)断网错误类型") }
             MockProtocol.failNetwork = false
         }
+        Session.shared.isLoggedIn = false
+        _ = try? await ApiClient.get("/mock")
+        check(MockProtocol.lastRequest?.url?.query?.contains("loginCode") != true, "未登录GET不拼空认证字段")
+        Session.shared.isLoggedIn = true
+        _ = try? await ApiClient.get("/user/verification/code/get")
+        check(MockProtocol.lastRequest?.url?.query?.contains("loginCode") != true, "验证码GET不注入认证")
+        check(MockProtocol.lastRequest?.value(forHTTPHeaderField: "phoneSystem") == nil, "不额外添加安卓未发送的phoneSystem头")
+        let encoded = String(data: ApiClient.encodeForm(["value": "a b+c&d"]), encoding: .utf8)
+        check(encoded == "value=a+b%2Bc%26d", "表单空格用加号、真实加号及分隔符正确转义")
         let before = MockProtocol.requests
         let expired = Session.shared.requestGeneration
         Session.shared.requestGeneration = UUID()

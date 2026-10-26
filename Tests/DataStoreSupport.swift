@@ -1,6 +1,6 @@
 import Foundation
 
-enum ApiError: Error { case transport(String); case unauthorized(status: Int) }
+enum ApiError: Error { case transport(String); case unauthorized(status: Int); case business(Int, String) }
 final class Session {
     static let shared = Session()
     var isLoggedIn = true
@@ -41,12 +41,14 @@ enum ApiClient {
     static var postResponse = "{\"success\":true,\"data\":null}"
     static var failPost = false
     static var onPost: (() -> Void)?
+    static var onGet: ((String) -> Void)?
     static func get(_ path: String, query: [String: String] = [:], tag: String? = nil) async throws -> Data {
         activeRequests += 1
         defer { activeRequests -= 1 }
         try Task.checkCancellation()
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         getPaths.append(path)
+        onGet?(path)
         if path == "/device/info/mac" {
             let address = query["macAddress"] ?? ""
             deviceQueries.append(address)
@@ -72,7 +74,11 @@ enum ApiClient {
         try await post(path, form: [:], tag: tag)
     }
     static func decode<T: Decodable>(_ type: T.Type, from data: Data, path: String) throws -> APIResponse<T> {
-        try JSONDecoder().decode(APIResponse<T>.self, from: data)
+        let response = try decodeShell(type, from: data, path: path)
+        guard response.success else {
+            throw ApiError.business(response.errorCode ?? -1, response.errorMessage ?? response.msg ?? "请求失败")
+        }
+        return response
     }
     static func decodeShell<T: Decodable>(_ type: T.Type, from data: Data, path: String) throws -> APIResponse<T> {
         try JSONDecoder().decode(APIResponse<T>.self, from: data)

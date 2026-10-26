@@ -123,7 +123,7 @@ struct LinYuToast: View {
                 .foregroundColor(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-                .truncationMode(.head)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)

@@ -317,7 +317,7 @@ struct CustomBackgroundView: View {
             // 恢复默认确认（对照 Android 的 Material3 AlertDialog）
             if resetConfirm {
                 DialogScrim(onTapOutside: { resetConfirm = false }) {
-                    AlertCard(title: "恢复默认背景？", titleAlign: .leading) {
+                    AlertCard(title: "恢复默认背景？", titleAlign: .leading, cornerRadius: 20) {
                         Text("这将移除当前页面的自定义背景")
                             .font(.system(size: 14))
                             .foregroundStyle(colors.textSecondary)

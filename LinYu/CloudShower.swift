@@ -114,7 +114,7 @@ enum CloudShower {
         }
 
         guard opened else {
-            return .failed("没能确认设备已开启。如果水已经出了，请先在账单里确认，不要重复点。")
+            return .failed("开阀未确认成功，请确认热水器是否已开启")
         }
 
         AppLog.shared.i("云端开阀成功 orderNo=\(confirmedOrderNo) autoDisCon=\(autoDisCon)s")

@@ -111,7 +111,7 @@ struct MainScreenView: View {
                         deviceCard(d)
                     }
 
-                    Color.clear.frame(height: 110)   // 给悬浮导航栏留位置
+                    Color.clear.frame(height: 100)   // 给悬浮导航栏留位置
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
@@ -483,7 +483,7 @@ struct MainScreenView: View {
         Task {
             await store.deviceInfo(sn)
             guard let info = store.deviceInfos[sn] else {
-                flow.toast = "获取设备信息失败，请稍后重试"
+                flow.toast = store.deviceLookupMessages[sn] ?? "获取设备信息失败，请稍后重试"
                 return
             }
             detailDevice = info
@@ -546,7 +546,7 @@ struct MainScreenView: View {
         } else {
             do {
                 guard let d = try await DeviceLookup.load(sn) else {
-                    flow.toast = "获取设备信息失败"
+                    flow.toast = "服务端没有这台设备的记录（\(sn)）"
                     return
                 }
                 await store.putDeviceInfo(d, sn: sn)
@@ -573,7 +573,7 @@ struct MainScreenView: View {
     private func bindBySn(_ sn: String) async {
         await resolveDevice(sn)
         guard let info = store.deviceInfos[sn] else {
-            flow.toast = "未查到该设备（\(sn)）"
+            flow.toast = store.deviceLookupMessages[sn] ?? "服务端没有这台设备的记录（\(sn)）"
             return
         }
         detailDevice = info

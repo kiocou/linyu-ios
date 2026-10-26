@@ -302,7 +302,8 @@ enum TrendDisplayPolicy {
 
     /// 横轴最多 5 个标签
     static func axisIndices(size: Int, maxLabels: Int = 5) -> [Int] {
-        if size <= 0 { return [] }
+        if size <= 0 || maxLabels <= 0 { return [] }
+        if maxLabels == 1 { return [0] }
         if size <= maxLabels { return Array(Set([0, size / 2, size - 1])).sorted() }
         let step = Double(size - 1) / Double(maxLabels - 1)
         var out: [Int] = []

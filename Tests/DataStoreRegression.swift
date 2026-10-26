@@ -10,6 +10,9 @@ struct DataStoreRegression {
             if !condition { failures.append(name) }
         }
 
+        let cacheKey = "billCache_test-school:test-account"
+        UserDefaults.standard.removeObject(forKey: cacheKey)
+        defer { UserDefaults.standard.removeObject(forKey: cacheKey) }
         ApiClient.failBills = true
         let retryStore = AppDataStore()
         await retryStore.loadIfNeeded()
@@ -45,7 +48,8 @@ struct DataStoreRegression {
         check(partial.count == 2, "settlement fallback preserves successful months on partial failure")
         let partialStore = AppDataStore()
         await partialStore.loadIfNeeded()
-        check(!partialStore.loaded, "partial bill responses do not become a complete cache")
+        check(partialStore.billsError != nil && partialStore.bills.isEmpty,
+              "partial bill responses preserve previous complete disk cache")
         ApiClient.failingMonth = nil
 
         SettlementRegression.run(check: check)
@@ -54,6 +58,11 @@ struct DataStoreRegression {
         await ParityBatchRegression.run(check: check)
         await DeviceAddressRegression.run(check: check)
         await SessionIsolationRegression.run(check: check)
+        await ParityFinishRegression.run(check: check)
+        await SharedStoreSessionRegression.run(check: check)
+        UserCardLayoutRegression.run(check: check)
+        BleCallbackRegression.run(check: check)
+        BleReplyBufferRegression.run(check: check)
 
         if !failures.isEmpty { fatalError("Regression failures: \(failures.joined(separator: ", "))") }
     }

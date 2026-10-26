@@ -30,7 +30,7 @@ struct PillNavBar: View {
                     .fill(colors.accent)
                     .frame(width: itemWidth, height: barHeight)
                     .offset(x: itemWidth * CGFloat(currentTab))
-                    .animation(.interpolatingSpring(stiffness: 380, damping: 22), value: currentTab)
+                    .animation(.interpolatingSpring(stiffness: 380, damping: 28.07), value: currentTab)
                     .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
 
                 HStack(spacing: 0) {
@@ -82,7 +82,7 @@ struct PillNavBar: View {
             .foregroundStyle(contentColor)
             .frame(width: itemWidth, height: barHeight)
             .scaleEffect(selected ? 1.04 : 1.0)
-            .animation(.interpolatingSpring(stiffness: 400, damping: 22), value: selected)
+            .animation(.interpolatingSpring(stiffness: 400, damping: 28.8), value: selected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

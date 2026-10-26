@@ -34,6 +34,7 @@ struct MainTabView: View {
     @State private var refreshToken = 0
 
     var body: some View {
+        GeometryReader { geometry in
         ZStack(alignment: .bottom) {
             AppBackground(scope: flow.activeOrder != nil && !showerMinimized ? .shower : .home)
 
@@ -89,7 +90,7 @@ struct MainTabView: View {
                             withAnimation(Self.pageAnimation) { tab = newTab }
                         }
                     ), colors: backgrounds.colors(colors))
-                        .padding(.bottom, 22)
+                        .padding(.bottom, 22 + geometry.safeAreaInsets.bottom)
                         .padding(.horizontal, 24)
                         .transition(.identity)
                 }
@@ -162,6 +163,7 @@ struct MainTabView: View {
             flow.peripheralProvider = { [scanner] sn in scanner.peripheral(forSn: sn) }
             flow.centralProvider = { [scanner] in scanner.manager }
             flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
+            store.onBillsLoaded = { [weak flow] bills in _ = flow?.reconcileLoadedBills(bills) }
             await processNotificationActions()
         }
         // 启动时：补结算上一笔待对账 + 拉一次未支付账单（开阀失败弹窗要用）
@@ -197,7 +199,7 @@ struct MainTabView: View {
         .task { await store.loadProfileIfNeeded() }
         .task { await store.loadUseCode() }
         .onDisappear {
-            store.cancelRequests()
+            store.cancelRequestsIfSessionEnded()
             if !Session.shared.isLoggedIn { flow.reset(); deduct.reset(); scanner.stop() }
         }
         .onChange(of: Session.shared.isLoggedIn) { loggedIn in
@@ -213,11 +215,12 @@ struct MainTabView: View {
         }
         .onChange(of: flow.toast) { value in
             guard let msg = value, !msg.isEmpty else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 // 只在还是同一条消息时才清，避免把后来的新消息误关
                 if flow.toast == msg { flow.toast = nil }
             }
         }
+        } // GeometryReader：外层保留安全区测量，内容层仍可延伸至屏幕底部。
     }
 
     @MainActor

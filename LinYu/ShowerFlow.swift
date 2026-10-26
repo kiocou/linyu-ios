@@ -194,7 +194,12 @@ final class ShowerFlow: ObservableObject {
                 records[index].isBluetooth = order.channel == .ble
             }
         }
-        if order.channel == .ble { Prefs.markBleDevice(order.snCode) }
+        if order.channel == .ble {
+            Prefs.markBleDevice(order.snCode)
+            BleRecoveryStore.save(BleRecoveryRecord(owner: AppNotifications.accountKey,
+                snCode: order.snCode, orderNo: order.orderNo, startedAt: Prefs.startedAt(order.snCode),
+                protocolType: order.protocolType, randomNumber: order.randomNumber, consumeDate: order.consumeDate))
+        }
         restoredOrders = ActiveOrderStore.all()
         // 使用中通知：同一 identifier 重复 add 只会替换，不会刷屏
         AppNotifications.shared.inUse(device: order.device.displayName, snCode: order.snCode,
@@ -214,6 +219,7 @@ final class ShowerFlow: ObservableObject {
         deviceOwner[snCode] = true
         AppNotifications.shared.clearInUse(snCode: snCode)
         ActiveOrderStore.finish(snCode)
+        BleRecoveryStore.remove(snCode: snCode)
         Prefs.setStartedAt(snCode, 0)
         Prefs.clearAutoDiscon(snCode)
         restoredOrders = ActiveOrderStore.all()
@@ -463,6 +469,8 @@ final class ShowerFlow: ObservableObject {
             if ActiveOrderStore.isRunning(sn) {
                 AppLog.shared.i("蓝牙设备已在用水（state=\(st.state)），判定为恢复，直接进入使用页")
                 let rec = ActiveOrderStore.find(sn)
+                let recovery = BleRecoveryStore.read(owner: AppNotifications.accountKey, snCode: sn,
+                    orderNo: rec?.orderNo ?? "", startedAt: Prefs.startedAt(sn))
                 if Prefs.startedAt(sn) <= 0 {
                     Prefs.setStartedAt(sn, Int64(Date().timeIntervalSince1970 * 1000))
                 }
@@ -470,7 +478,7 @@ final class ShowerFlow: ObservableObject {
                     device: device,
                     snCode: sn,
                     orderNo: rec?.orderNo ?? "",
-                    consumeDate: "",
+                    consumeDate: recovery?.consumeDate ?? "",
                     protocolType: st.protocolType,
                     randomNumber: st.randomNumber,
                     startedAt: startDate(sn),
@@ -551,7 +559,7 @@ final class ShowerFlow: ObservableObject {
         openingText = "正在写入费率并开阀…"
         guard await ble.writeRate(downBytes) else {
             ble.disconnect()
-            errorMessage = "费率写入未被设备确认，可能没出水（先看日志，别重复点）"
+            errorMessage = "未能确认设备已开启，请确认水流状态后决定是否重试"
             return
         }
 
@@ -642,9 +650,11 @@ final class ShowerFlow: ObservableObject {
             Task { await workScope.run(fallback: ()) { await self.settleCloud(settledOrder, elapsed: elapsed, automatic: automatic) } }
         case let .unconfirmed(msg):
             // 没有证据 = 水可能还在流。留在页面让用户重试
+            AppNotifications.shared.closeProblem(device: order.device.displayName, snCode: order.snCode)
             toast = "没能确认设备已关闭，请检查网络后重试"
             startTimer()
         case let .failed(msg):
+            AppNotifications.shared.closeProblem(device: order.device.displayName, snCode: order.snCode, reason: msg)
             toast = msg
             startTimer()
         }
@@ -677,6 +687,8 @@ final class ShowerFlow: ObservableObject {
 
         guard r.waterStopped else {
             // ⚠️ 水可能还在流 —— 留在使用页，让他能重试
+            AppNotifications.shared.closeProblem(device: order.device.displayName, snCode: order.snCode,
+                reason: "设备没有响应关闭指令，请靠近设备后重试")
             toast = "设备没有响应关闭指令，请靠近设备后重试"
             AppLog.shared.w("蓝牙关阀未确认，保留使用页以便重试")
             startTimer()
@@ -717,7 +729,7 @@ final class ShowerFlow: ObservableObject {
 
         // ② 断开 → 重连
         ble.disconnect()
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        // 对齐 Android：无固定等待。BleSession 等旧连接终止事件后即可重连。
         guard workScope.isCurrent else { return }
 
         var reconnected = await ble.connect(peripheral: p, using: central)
@@ -920,6 +932,11 @@ final class ShowerFlow: ObservableObject {
     /// 结算完成：记金额、弹提示（或自动关停弹窗）
     private func finishWithAmount(_ yuan: Double?, autoClosed: Bool, deviceName: String, snCode: String, elapsed: Int) {
         guard workScope.isCurrent else { return }
+        // 关阀时长已确定，不把等待结算的时间计入后续补发通知。
+        if var pending = PendingSettlementStore.all().first(where: { $0.snCode == snCode }) {
+            pending.elapsedSec = max(0, elapsed)
+            PendingSettlementStore.record(pending)
+        }
         AppNotifications.shared.finished(device: deviceName, snCode: snCode,
             elapsed: elapsed,
             amount: yuan, automatic: autoClosed)
@@ -1063,10 +1080,21 @@ final class ShowerFlow: ObservableObject {
             return []
         }
         guard workScope.isCurrent else { return [] }
+        return reconcileLoadedBills(bills)
+    }
+
+    /// 账单刷新成功后复用结果，不为补通知重复请求三个月账单。
+    @discardableResult
+    func reconcileLoadedBills(_ bills: [BillDTO], pending: [PendingSettlement]? = nil) -> [SettlementUpdate] {
+        guard workScope.isCurrent else { return [] }
+        let pending = pending ?? PendingSettlementStore.all()
         let result = SettlementReconciler.reconcile(pending: pending, bills: bills)
         PendingSettlementStore.save(result.remaining)
 
         for update in result.updates {
+            if let item = pending.first(where: { $0.snCode == update.snCode }) {
+                AppNotifications.shared.correctSettlement(item, amount: update.amount)
+            }
             Prefs.recordConsume(update.snCode, amount: update.amount)
             Prefs.lastConsumeYuan = update.amount
             AppLog.shared.i("待对账补齐：\(update.snCode) ¥\(MoneyFormat.format(update.amount))")
@@ -1218,8 +1246,12 @@ final class ShowerFlow: ObservableObject {
                                      snCode: target.snCode, elapsed: elapsed)
                 }
             }
-        case let .failed(message): toast = message
-        case .unconfirmed: toast = "没能确认设备已关闭，请检查网络后重试"
+        case let .failed(message):
+            toast = message
+            AppNotifications.shared.closeProblem(device: record.deviceName, snCode: target.snCode, reason: message)
+        case .unconfirmed:
+            toast = "没能确认设备已关闭，请检查网络后重试"
+            AppNotifications.shared.closeProblem(device: record.deviceName, snCode: target.snCode)
         }
         return true
     }
@@ -1364,6 +1396,10 @@ final class ShowerFlow: ObservableObject {
             deviceName: deviceName
         )
         guard workScope.isCurrent else { return }
+        if var pending = PendingSettlementStore.all().first(where: { $0.snCode == snCode }) {
+            pending.elapsedSec = max(0, elapsed)
+            PendingSettlementStore.record(pending)
+        }
         AppNotifications.shared.finished(
             device: deviceName, snCode: snCode, elapsed: elapsed, amount: money, automatic: true
         )

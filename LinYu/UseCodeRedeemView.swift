@@ -1,10 +1,5 @@
 import SwiftUI
 
-private struct GeneratedUseCode: Decodable {
-    let useCode: String?
-    let remainTimes: Int?
-}
-
 struct UseCodeRedeemView: View {
     @EnvironmentObject private var store: AppDataStore
     @Environment(\.appColors) private var colors
@@ -117,15 +112,15 @@ struct UseCodeRedeemView: View {
         errorText = nil
         defer { busy = false }
         do {
-            let raw = try await ApiClient.post("/account/useCode/new/generate", form: [:], tag: "generateUseCode")
-            let result = try ApiClient.decode(GeneratedUseCode.self, from: raw, path: "generateUseCode")
-            guard let code = result.data?.useCode, !code.isEmpty else {
+            let result = try await store.generateUseCode()
+            guard let code = result.useCode, !code.isEmpty else {
                 errorText = "换码失败，请重试"; return
             }
             candidate = code
-            remainTimes = result.data?.remainTimes
+            remainTimes = result.remainTimes
             expires = Date().addingTimeInterval(180)
-        } catch { errorText = "换码失败，请重试" }
+        } catch is CancellationError { return }
+        catch { errorText = "换码失败，请重试" }
     }
 
     private func redeem() async {
@@ -135,11 +130,10 @@ struct UseCodeRedeemView: View {
         errorText = nil
         defer { busy = false; claiming = false }
         do {
-            let raw = try await ApiClient.post("/account/useCode/new/set", form: ["useCode": candidate], tag: "setUseCode")
-            _ = try ApiClient.decode(EmptyData.self, from: raw, path: "setUseCode")
-            store.acceptUseCode(candidate)
+            try await store.claimUseCode(candidate)
             onRedeemed()
             onDismiss()
-        } catch { errorText = "领取失败，请重试" }
+        } catch is CancellationError { return }
+        catch { errorText = "领取失败，请重试" }
     }
 }

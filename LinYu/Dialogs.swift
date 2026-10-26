@@ -41,6 +41,7 @@ struct AlertCard<Content: View, Actions: View>: View {
     var titleAlign: TextAlignment = .center
     /// 标题下面那行小字（如位置）
     var subtitle: String? = nil
+    var cornerRadius: CGFloat = 28
     @ViewBuilder let content: Content
     @ViewBuilder let actions: Actions
 
@@ -78,7 +79,7 @@ struct AlertCard<Content: View, Actions: View>: View {
         .padding(24)
         .frame(maxWidth: 340)
         .background(colors.solidSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 24, y: 10)
     }
 }
