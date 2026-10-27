@@ -456,7 +456,7 @@ final class ShowerFlow: ObservableObject {
             ble.disconnect()
             guard workScope.isCurrent else { return }
             guard settled.completed else {
-                errorMessage = "设备有未结算记录，自动补结算失败，请稍后重试"
+                errorMessage = "设备有未结算记录，自动补结算失败或设备记录未能清除（服务端已记账，设备仍停在 state=\(st.state)），请靠近设备后重试"
                 return
             }
             if !allowNewOrder {
@@ -858,7 +858,13 @@ final class ShowerFlow: ObservableObject {
             let yuan = body.upMoneyYuan
             guard workScope.isCurrent else { return (false, nil) }
 
-            // ③ 写回设备（清掉离线记录）；写回失败不影响——服务端已经记账
+            // ③ 写回设备（清掉离线记录）。
+            //
+            // 服务端记账成功 ≠ 设备记录已清。写回失败时设备会**一直停在 state=3/6**，
+            // 于是每次点开阀都会重新走一遍补结算、再提示"已结清…请重新点击"，
+            // 补结算看起来次次成功，热水却始终开不了。
+            // 因此这里必须回读状态确认设备真的回到空闲，才能对外报"已结清"。
+            var cleared = false
             if let clData = body.clData, !clData.isEmpty,
                let plain = KlcxkjCrypto.decryptByAes(clData) {
                 let hexPart = plain.contains("-")
@@ -867,11 +873,24 @@ final class ShowerFlow: ObservableObject {
                 if let bytes = BleFrame.fromHex(hexPart), !bytes.isEmpty {
                     let ok = await ble.writeBack(bytes)
                     AppLog.shared.i(ok ? "0x86 写回成功，设备记录已清" : "0x86 写回失败（服务端已记账）")
+                    cleared = ok
+                } else {
+                    AppLog.shared.w("结算：clData 解密后不是有效 hex，跳过写回")
                 }
+            } else {
+                AppLog.shared.w("结算：服务端未返回 clData，设备记录无法清除")
             }
+
+            // ④ 回读设备状态：state 回到 0 才算真正清干净
+            if let st = await ble.query() {
+                AppLog.shared.i("结算后回读：state=\(st.state)")
+                if st.isIdle { cleared = true }
+            }
+
             AppLog.shared.i("结算上传成功：设备=\(deviceName) orderNo=\(orderNo) upMoney=\(body.upMoney?.value ?? body.consumeMoney?.value ?? -1)")
             _ = consumeDate
-            return (true, yuan)
+            // cleared=false 时上层要按"未清干净"处理，不能再提示用户重新点击
+            return (cleared, yuan)
         } catch {
             AppLog.shared.w("上传结算失败：\(error.localizedDescription)")
             return (false, nil)
