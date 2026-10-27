@@ -55,6 +55,10 @@ jobs:
             LinYu/ApiModels.swift LinYu/LoginFeedback.swift LinYu/DeviceInfoDisplay.swift Tests/DeviceDisplayRegression.swift \
             -o "$RUNNER_TEMP/linyu-display-tests"
           "$RUNNER_TEMP/linyu-display-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            WidgetShared/WidgetSnapshot.swift Tests/WidgetRegression.swift \
+            -o "$RUNNER_TEMP/linyu-widget-tests"
+          "$RUNNER_TEMP/linyu-widget-tests"
 
       - name: 生成 Xcode 工程
         run: xcodegen generate
@@ -73,6 +77,30 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_BITCODE=NO
 
+      - name: 组件离线布局截图
+        run: |
+          set -euo pipefail
+          xcodebuild build -project LinYu.xcodeproj -scheme LinYu -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO > build/simulator-build.log 2>&1 || { tail -100 build/simulator-build.log; exit 1; }
+          SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          xcrun simctl boot "$SIM" || true
+          xcrun simctl bootstatus "$SIM" -b
+          xcrun simctl install "$SIM" build/Simulator/Build/Products/Debug-iphonesimulator/LinYu.app
+          mkdir -p build/widget-previews
+          for MODE in idle running nearby bills; do
+            xcrun simctl terminate "$SIM" com.hualala.linyu || true
+            xcrun simctl launch "$SIM" com.hualala.linyu --widget-preview "--preview-$MODE"
+            sleep 3
+            xcrun simctl io "$SIM" screenshot "build/widget-previews/$MODE.png"
+          done
+
+      - name: 上传组件布局截图
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinYu-widget-previews
+          path: build/widget-previews
+
       - name: 校验产物并打包成 ipa
         run: |
           set -euo pipefail
@@ -83,6 +111,10 @@ jobs:
             exit 1
           fi
           echo "产物大小：$(du -sh "$APP" | cut -f1)"
+          EXT="$APP/PlugIns/LinYuWidgets.appex"
+          test -f "$EXT/LinYuWidgets"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = "com.apple.widgetkit-extension"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT/Info.plist")" = "18"
 
           # 未签名 ipa 的标准结构就是 Payload/<App>.app
           rm -rf build/Payload build/LinYu-unsigned.ipa

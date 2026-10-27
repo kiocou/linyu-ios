@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// 三 Tab 容器 —— 对照 Android 的 `MainActivity`。
 ///
@@ -24,6 +25,7 @@ struct MainTabView: View {
     @StateObject private var kickWatch = KickWatch()
     @ObservedObject private var notifications = AppNotifications.shared
     @State private var handlingNotification = false
+    @ObservedObject private var widgets = WidgetBridge.shared
     @Environment(\.scenePhase) private var scenePhase
     /// 进「我的 → 设置」时隐藏底部导航（Android 也是这么做的）
     @State private var settingsVisible = false
@@ -165,6 +167,8 @@ struct MainTabView: View {
             flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
             store.onBillsLoaded = { [weak flow] bills in _ = flow?.reconcileLoadedBills(bills) }
             await processNotificationActions()
+            await processWidgetCommand()
+            widgets.sync(store: store, flow: flow, scanner: scanner, force: true)
         }
         // 启动时：补结算上一笔待对账 + 拉一次未支付账单（开阀失败弹窗要用）
         .task { await flow.reconcileSettlements() }
@@ -177,12 +181,14 @@ struct MainTabView: View {
         .onDisappear { kickWatch.stop() }
         // 回前台对齐用水状态（Android 的 `reconcileShowerOnResume`）
         .onChange(of: scenePhase) { phase in
+            widgets.sync(store: store, flow: flow, scanner: scanner, force: true)
             if phase != .active { flow.stopOrderWatch() }
             guard phase == .active else { return }
             Task {
                 await AppNotifications.shared.refreshAuthorization()
                 // 先处理指定设备的停止请求，不让账单刷新延迟关阀。
                 await processNotificationActions()
+                await processWidgetCommand()
                 await flow.reconcileOnResume()
                 await flow.reconcileSettlements()
                 await store.reload()
@@ -191,6 +197,16 @@ struct MainTabView: View {
         }
         // 覆盖冷启动、前台点击通知，以及回调晚于 scenePhase 的情况。
         .onChange(of: notifications.actions) { _ in Task { await processNotificationActions() } }
+        .onChange(of: widgets.command) { _ in Task { await processWidgetCommand() } }
+        .onReceive(store.objectWillChange.debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in
+            widgets.sync(store: store, flow: flow, scanner: scanner)
+        }
+        .onReceive(flow.objectWillChange.debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in
+            widgets.sync(store: store, flow: flow, scanner: scanner)
+        }
+        .onReceive(scanner.$devices.debounce(for: .seconds(2), scheduler: RunLoop.main)) { _ in
+            widgets.sync(store: store, flow: flow, scanner: scanner)
+        }
         .onChange(of: notifications.settingsRevision) { _ in flow.refreshInUseNotifications() }
         .onChange(of: notifications.destinationTab) { target in
             consumeNotificationDestination()
@@ -198,9 +214,11 @@ struct MainTabView: View {
         .task { consumeNotificationDestination() }
         .onChange(of: flow.isStarting) { busy in
             if !busy { Task { await processNotificationActions() } }
+            if !busy { Task { await processWidgetCommand() } }
         }
         .onChange(of: flow.isStopping) { busy in
             if !busy { Task { await processNotificationActions() } }
+            if !busy { Task { await processWidgetCommand() } }
         }
         .task { await store.loadProfileIfNeeded() }
         .task { await store.loadUseCode() }
@@ -234,6 +252,20 @@ struct MainTabView: View {
         settingsVisible = false
         tab = target
         notifications.destinationTab = nil
+    }
+
+    @MainActor private func processWidgetCommand() async {
+        guard scenePhase == .active else { return }
+        flow.peripheralProvider = { [scanner] sn in scanner.peripheral(forSn: sn) }
+        flow.centralProvider = { [scanner] in scanner.manager }
+        flow.deviceInfoProvider = { [store] sn in store.deviceInfos[sn] }
+        guard let action = await widgets.process(store: store, flow: flow, scanner: scanner) else { return }
+        settingsVisible = false
+        userPresentation.page = nil
+        if action == .bills { showerMinimized = true; tab = 1; await store.reload() }
+        else if action == .nearby { showerMinimized = true; tab = 0; scanner.start() }
+        else { tab = 0; showerMinimized = flow.activeOrder == nil }
+        widgets.sync(store: store, flow: flow, scanner: scanner, force: true)
     }
 
     @MainActor

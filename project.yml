@@ -21,6 +21,8 @@ targets:
     type: application
     platform: iOS
     sources:
+      - path: WidgetShared
+      - path: WidgetExtension/LinYuWidgets.swift
       - path: LinYu
         excludes:
           - Info.plist
@@ -35,6 +37,10 @@ targets:
         CFBundleDisplayName: 淋浴
         CFBundleShortVersionString: "3.1.0"
         CFBundleVersion: "18"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.hualala.linyu.widget
+            CFBundleURLSchemes:
+              - linyu-widget
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -43,9 +49,45 @@ targets:
         NSBluetoothPeripheralUsageDescription: 用于连接校园热水器
         # 扫码绑定设备要用相机（对照 Android 的 QrScanActivity）
         NSCameraUsageDescription: 用于扫描设备二维码以绑定设备
+    entitlements:
+      path: LinYu/LinYu.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hualala.linyu
+    dependencies:
+      - target: LinYuWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.hualala.linyu
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  LinYuWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: WidgetExtension
+      - path: WidgetShared
+    info:
+      path: WidgetExtension/Info.plist
+      properties:
+        CFBundleDisplayName: 淋浴小组件
+        CFBundleShortVersionString: "3.1.0"
+        CFBundleVersion: "18"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: WidgetExtension/LinYuWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.hualala.linyu
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hualala.linyu.widgets
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) LINYU_WIDGET_EXTENSION"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"

@@ -114,6 +114,7 @@ final class Session: ObservableObject {
         // 使用中/结束通知一起撤掉 —— 退出登录后还挂着「正在使用」会误导人
         // （对照 Android：logout 里会 cancel 通知）
         AppNotifications.shared.clear()
+        Task { @MainActor in if !Session.shared.isLoggedIn { WidgetBridge.shared.clear() } }
         if !preserveActiveRecovery {
             kickedReason = nil
             ActiveOrderStore.clear()
