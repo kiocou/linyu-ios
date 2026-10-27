@@ -13,7 +13,6 @@ final class Session {
 final class AppLog {
     static let shared = AppLog()
     func i(_ text: String, _ detail: String?) {}
-    func w(_ text: String, _ detail: String? = nil) {}
     func e(_ text: String, _ detail: String?) {}
 }
 final class MockProtocol: URLProtocol {

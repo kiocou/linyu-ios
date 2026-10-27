@@ -861,6 +861,11 @@ final class ShowerFlow: ObservableObject {
             }
 
             let yuan = body.upMoneyYuan
+            // 容错解码留下的问题字段：正常应为空，非空说明服务端某字段类型不符合预期
+            if !body.decodeIssues.isEmpty {
+                AppLog.shared.w("结算上传响应有字段解码异常（已按 nil 处理，不影响 clData）："
+                                + body.decodeIssues.joined(separator: "；"))
+            }
             guard workScope.isCurrent else { return (false, nil) }
 
             // ③ 写回设备（清掉离线记录）。

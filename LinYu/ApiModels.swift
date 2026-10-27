@@ -151,20 +151,26 @@ struct BluetoothUploadData: Decodable {
     ///
     /// 这里每个字段单独 `decodeIfPresent` 并吞掉该字段的异常：
     /// 一个字段类型不符，不影响其余字段（尤其是 `clData`）。
-    /// 任何字段解码失败都会记一条 `AppLog` 警告，下次看日志能直接定位。
+    ///
+    /// ⚠️ 本文件同时被回归测试编译（测试里没有 `AppLog`），
+    /// 所以**不要在这里调用日志**：失败字段名收集到 `decodeIssues`，由调用方记录。
     private enum CodingKeys: String, CodingKey {
         case upMoney, consumeMoney, orderNo, clData, consumeDate
     }
 
+    /// 解码时出问题的字段（字段名 → 原因），供调用方写日志
+    let decodeIssues: [String]
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        var issues: [String] = []
 
         /// 单字段容错取值：该字段异常时返回 nil，不拖垮其余字段
         func tolerant<T: Decodable>(_ key: CodingKeys, _ type: T.Type) -> T? {
             do {
                 return try c.decodeIfPresent(type, forKey: key)
             } catch {
-                AppLog.shared.w("bluetoothUpload 字段 \(key.rawValue) 解码失败（按 nil 处理）：\(error)")
+                issues.append("\(key.rawValue)：\(error.localizedDescription)")
                 return nil
             }
         }
@@ -174,6 +180,7 @@ struct BluetoothUploadData: Decodable {
         orderNo = tolerant(.orderNo, String.self)
         clData = tolerant(.clData, String.self)
         consumeDate = tolerant(.consumeDate, String.self)
+        decodeIssues = issues
     }
 }
 
