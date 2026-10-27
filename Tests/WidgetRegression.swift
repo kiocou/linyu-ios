@@ -49,6 +49,10 @@ import Foundation
         check(WidgetGroupPolicy.candidates(profile: profile, original: group) == [group + ".TEAM"], "使用本应用签名后的组名且不读取无关应用组")
         check(WidgetGroupPolicy.candidates(profile: nil, original: group) == [group], "模拟器及无描述文件时使用原组名")
         check(WidgetGroupPolicy.candidates(profile: Data("broken".utf8), original: group) == [group], "损坏描述文件不崩溃")
+        let now = Date()
+        check(WidgetDisplayPolicy.syncedAgo(now, now: now) == "刚刚", "组件刚同步文案中文")
+        check(WidgetDisplayPolicy.syncedAgo(now.addingTimeInterval(-120), now: now) == "2 分钟前", "组件分钟文案不受英文系统影响")
+        check(WidgetDisplayPolicy.syncedAgo(now.addingTimeInterval(-7200), now: now) == "2 小时前", "组件小时文案中文")
         if failures > 0 { fatalError("\(failures) widget checks failed") }
     }
 }

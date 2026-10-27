@@ -48,6 +48,15 @@ struct WidgetSnapshot: Codable, Equatable {
     }
 }
 
+enum WidgetDisplayPolicy {
+    static func syncedAgo(_ date: Date, now: Date) -> String {
+        let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
+        if minutes < 1 { return "刚刚" }
+        if minutes < 60 { return "\(minutes) 分钟前" }
+        return "\(minutes / 60) 小时前"
+    }
+}
+
 enum WidgetCommandKind: String, Codable { case start, stop, refresh, home, bills, nearby }
 struct WidgetCommand: Equatable, Identifiable {
     let id = UUID()

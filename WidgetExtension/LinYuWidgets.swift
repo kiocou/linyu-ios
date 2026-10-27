@@ -149,12 +149,13 @@ struct LinYuWidgetView: View {
     private var tile: some View {
         Link(destination: url(action)) {
             VStack(spacing: 12) {
-                Image(systemName: device?.running == true ? "stop.fill" : "shower.fill").font(.system(size: 42))
-                Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.head)
-                Text(snapshot.message ?? (device?.running == true ? "结束用水" : device?.occupied == true ? "占用中" : "开始用水"))
-                    .font(.system(size: 11)).lineLimit(2)
+                Text(staleBusy ? "状态未知" : snapshot.message ?? (snapshot.owner.isEmpty ? "未登录" : device == nil ? "未选设备" : device?.running == true ? "使用中" : device?.occupied == true ? "占用中" : "空闲"))
+                    .font(.system(size: 12)).lineLimit(2)
+                if snapshot.busy && !staleBusy { ProgressView().tint(.white) }
+                else if device?.occupied == true { Image(systemName: "lock.fill").font(.system(size: 42)) }
+                else { AndroidWidgetGlyph(kind: device?.running == true ? "stop" : "power").frame(width: 48, height: 48) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(stateColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 18))
+                .background((device?.running == true ? Color.cyan : device?.occupied == true ? Color.orange : Color.white).opacity(0.18), in: RoundedRectangle(cornerRadius: 18))
         }.disabled(snapshot.busy && !staleBusy)
     }
     private var header: some View {
@@ -231,7 +232,7 @@ struct LinYuWidgetView: View {
                 Spacer(minLength: 0)
                 Link(destination: url(.nearby)) { Image(systemName: "arrow.clockwise") }
             }
-            if let date = snapshot.nearbyDate { Text(date, style: .relative).font(.system(size: 9)).foregroundStyle(.white.opacity(0.6)) }
+            if let date = snapshot.nearbyDate { Text("（\(WidgetDisplayPolicy.syncedAgo(date, now: entry.date))）").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6)) }
             let devices = snapshot.devices.filter { snapshot.nearbyIDs.contains($0.id) && ($0.selectable || $0.running) }
             if devices.isEmpty { Text("未扫描到附近设备").foregroundStyle(.white.opacity(0.6)); Spacer(minLength: 0) }
             ForEach(Array(devices.prefix(family == .systemLarge ? 5 : 2))) { item in
