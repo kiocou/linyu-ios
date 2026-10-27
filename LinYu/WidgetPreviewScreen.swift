@@ -35,8 +35,7 @@ struct WidgetPreviewScreen: View {
             .background(Color(red: 0.16, green: 0.20, blue: 0.24).ignoresSafeArea())
     }
     private func preview(_ layout: String, width: CGFloat, height: CGFloat, family: WidgetFamily) -> some View {
-        LinYuWidgetView(entry: entry, layout: layout)
-            .environment(\.widgetFamily, family)
+        LinYuWidgetView(entry: entry, layout: layout, familyOverride: family)
             .frame(width: width, height: height)
             .background(Color(red: 0.12, green: 0.15, blue: 0.19))
             .clipShape(RoundedRectangle(cornerRadius: 22))

@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           xcodebuild build -project LinYu.xcodeproj -scheme LinYu -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO > build/simulator-build.log 2>&1 || { tail -100 build/simulator-build.log; exit 1; }
+            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO > build/simulator-build.log 2>&1 || { rg -n -C 4 'error:' build/simulator-build.log || true; tail -100 build/simulator-build.log; exit 1; }
           SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
           xcrun simctl boot "$SIM" || true
           xcrun simctl bootstatus "$SIM" -b
@@ -96,10 +96,13 @@ jobs:
           done
 
       - name: 上传组件布局截图
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: LinYu-widget-previews
-          path: build/widget-previews
+          path: |
+            build/widget-previews
+            build/simulator-build.log
 
       - name: 校验产物并打包成 ipa
         run: |
@@ -124,7 +127,7 @@ jobs:
           zip -qry LinYu-unsigned.ipa Payload
 
           echo "ipa 大小：$(du -sh LinYu-unsigned.ipa | cut -f1)"
-          unzip -l LinYu-unsigned.ipa | head -20
+          unzip -l LinYu-unsigned.ipa | sed -n '1,20p'
 
       - name: 上传 ipa
         uses: actions/upload-artifact@v4

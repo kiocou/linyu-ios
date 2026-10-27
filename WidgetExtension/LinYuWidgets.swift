@@ -76,11 +76,43 @@ private struct Glass: ViewModifier {
             .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(.white.opacity(0.16), lineWidth: 1))
     }
 }
+/// 对照 Android res/drawable/ic_widget_*.xml 的 24×24 描边路径。
+private struct AndroidWidgetGlyph: View {
+    let kind: String
+    var body: some View {
+        GeometryReader { geo in
+            glyph.strokedPath(StrokeStyle(lineWidth: kind == "power" || kind == "stop" ? 2.4 : 2.2, lineCap: .round, lineJoin: .round))
+                .applying(CGAffineTransform(scaleX: geo.size.width / 24, y: geo.size.height / 24)).fill(.white)
+        }
+    }
+    private var glyph: Path {
+        var p = Path()
+        switch kind {
+        case "bluetooth":
+            p.move(to: CGPoint(x: 6.5, y: 6.5))
+            for point in [CGPoint(x: 17.5, y: 17.5), CGPoint(x: 12, y: 23), CGPoint(x: 12, y: 1), CGPoint(x: 17.5, y: 6.5), CGPoint(x: 6.5, y: 17.5)] { p.addLine(to: point) }
+        case "clock":
+            p.addEllipse(in: CGRect(x: 2, y: 2, width: 20, height: 20))
+            p.move(to: CGPoint(x: 12, y: 6)); p.addLine(to: CGPoint(x: 12, y: 12)); p.addLine(to: CGPoint(x: 16, y: 14))
+        case "card":
+            p.addRoundedRect(in: CGRect(x: 2, y: 5, width: 20, height: 14), cornerSize: CGSize(width: 2, height: 2))
+            p.move(to: CGPoint(x: 2, y: 10)); p.addLine(to: CGPoint(x: 22, y: 10))
+        case "stop":
+            p.addRoundedRect(in: CGRect(x: 6, y: 6, width: 12, height: 12), cornerSize: CGSize(width: 2, height: 2))
+        default:
+            p.addArc(center: CGPoint(x: 12, y: 13), radius: 9, startAngle: .degrees(-45), endAngle: .degrees(225), clockwise: false)
+            p.move(to: CGPoint(x: 12, y: 2)); p.addLine(to: CGPoint(x: 12, y: 12))
+        }
+        return p
+    }
+}
 @available(iOS 17.0, *)
 struct LinYuWidgetView: View {
-    @Environment(\.widgetFamily) var family
+    @Environment(\.widgetFamily) private var systemFamily
     let entry: LinYuWidgetEntry
     let layout: String
+    var familyOverride: WidgetFamily? = nil
+    private var family: WidgetFamily { familyOverride ?? systemFamily }
     private var snapshot: WidgetSnapshot { entry.snapshot }
     private var device: WidgetDevice? { snapshot.selected(entry.selection.device) }
     private var staleBusy: Bool { snapshot.busy && entry.date.timeIntervalSince(snapshot.date) > 30 }
@@ -132,6 +164,8 @@ struct LinYuWidgetView: View {
             if device != nil {
                 Text(device?.running == true ? "● 使用中" : device?.occupied == true ? "● 占用中" : "● 空闲")
                     .font(.system(size: 10)).foregroundStyle(stateColor).fixedSize()
+                    .padding(.horizontal, 5).padding(.vertical, 3)
+                    .background(stateColor.opacity(0.14), in: Capsule())
             }
         }
     }
@@ -152,8 +186,8 @@ struct LinYuWidgetView: View {
     }
     private var power: some View {
         Link(destination: url(action)) {
-            Image(systemName: device?.running == true ? "stop.fill" : "power")
-                .font(.system(size: 25, weight: .medium)).frame(maxWidth: .infinity, maxHeight: .infinity)
+            AndroidWidgetGlyph(kind: device?.running == true ? "stop" : "power").frame(width: 24, height: 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .modifier(Glass())
         }.disabled(snapshot.busy && !staleBusy).accessibilityLabel(device?.running == true ? "结束用水" : "开始用水")
     }
@@ -170,8 +204,8 @@ struct LinYuWidgetView: View {
             VStack(spacing: 8) {
                 ForEach(0..<3) { index in
                     Button(intent: WidgetPageIntent(slot: entry.slot, page: index)) {
-                        Image(systemName: ["clock", "antenna.radiowaves.left.and.right", "creditcard"][index])
-                            .font(.system(size: 20)).frame(width: 34, height: 34)
+                        AndroidWidgetGlyph(kind: ["clock", "bluetooth", "card"][index]).frame(width: 22, height: 22)
+                            .frame(width: 34, height: 34)
                             .background(.white.opacity(entry.selection.tab == index ? 0.18 : 0), in: RoundedRectangle(cornerRadius: 10))
                     }.accessibilityLabel(["设备", "附近设备", "账单"][index])
                 }
