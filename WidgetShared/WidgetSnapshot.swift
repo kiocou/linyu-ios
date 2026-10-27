@@ -87,6 +87,20 @@ struct WidgetCommand: Equatable, Identifiable {
     }
 }
 
+enum WidgetGroupPolicy {
+    /// SideStore 会为组名追加签名团队后缀；只读取本 bundle 的配置，不遍历其他应用。
+    static func candidates(profile: Data?, original: String) -> [String] {
+        guard let profile, profile.count < 2_000_000,
+              let start = profile.range(of: Data("<?xml".utf8)),
+              let end = profile.range(of: Data("</plist>".utf8), in: start.lowerBound..<profile.endIndex),
+              let root = try? PropertyListSerialization.propertyList(from: profile[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
+              let entitlements = root["Entitlements"] as? [String: Any],
+              let groups = entitlements["com.apple.security.application-groups"] as? [String] else { return [original] }
+        let matching = groups.filter { $0 == original || $0.hasPrefix(original + ".") }
+        return matching.isEmpty ? [original] : matching
+    }
+}
+
 enum WidgetSharedStore {
     static let group = "group.com.hualala.linyu"
     private static var writeOptions: Data.WritingOptions {
@@ -96,9 +110,13 @@ enum WidgetSharedStore {
         return [.atomic]
         #endif
     }
-    static var directory: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
-    }
+    static let directory: URL? = {
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
+        for identifier in WidgetGroupPolicy.candidates(profile: profile, original: group) {
+            if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) { return url }
+        }
+        return nil
+    }()
     static func read() -> WidgetSnapshot {
         guard let url = directory?.appendingPathComponent("widget-snapshot.json"),
               let data = try? Data(contentsOf: url), let snapshot = try? JSONDecoder().decode(WidgetSnapshot.self, from: data) else {

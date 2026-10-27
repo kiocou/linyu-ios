@@ -44,6 +44,11 @@ import Foundation
         snapshot.devices[0].startedAt = 456
         check(before != snapshot.controlIdentity, "新会话时间使旧控制身份失效")
         check(snapshot.selected("")?.id == "A", "默认选中上次设备")
+        let group = "group.com.hualala.linyu"
+        let profile = try PropertyListSerialization.data(fromPropertyList: ["Entitlements": ["com.apple.security.application-groups": [group + ".TEAM", "group.unrelated"]]], format: .xml, options: 0)
+        check(WidgetGroupPolicy.candidates(profile: profile, original: group) == [group + ".TEAM"], "使用本应用签名后的组名且不读取无关应用组")
+        check(WidgetGroupPolicy.candidates(profile: nil, original: group) == [group], "模拟器及无描述文件时使用原组名")
+        check(WidgetGroupPolicy.candidates(profile: Data("broken".utf8), original: group) == [group], "损坏描述文件不崩溃")
         if failures > 0 { fatalError("\(failures) widget checks failed") }
     }
 }
