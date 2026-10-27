@@ -851,6 +851,11 @@ final class ShowerFlow: ObservableObject {
                 if code == 170 {
                     AppLog.shared.e("结算上传被拒（170）：签名与上传字段不一致，请带日志反馈")
                 }
+                // data 为空但外壳成功：多半是字段解码整体失败，把原文打出来
+                if resp.success {
+                    AppLog.shared.w("结算上传成功但 data 解析为空，原始响应："
+                                    + String((String(data: data, encoding: .utf8) ?? "").prefix(500)))
+                }
                 AppLog.shared.w("结算上传失败（errorCode=\(code)）：\(resp.displayMessage ?? "")")
                 return (false, nil)
             }
@@ -878,7 +883,9 @@ final class ShowerFlow: ObservableObject {
                     AppLog.shared.w("结算：clData 解密后不是有效 hex，跳过写回")
                 }
             } else {
-                AppLog.shared.w("结算：服务端未返回 clData，设备记录无法清除")
+                AppLog.shared.w("结算：服务端未返回 clData，设备记录无法清除"
+                                + "（orderNo=\(body.orderNo ?? "-")，原始响应："
+                                + String((String(data: data, encoding: .utf8) ?? "").prefix(500)) + "）")
             }
 
             // ④ 回读设备状态：state 回到 0 才算真正清干净

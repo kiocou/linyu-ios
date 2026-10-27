@@ -141,6 +141,40 @@ struct BluetoothUploadData: Decodable {
     var upMoneyYuan: Double? {
         (upMoney?.value ?? consumeMoney?.value).map { $0 / 1000.0 }
     }
+
+    /// 逐字段容错解码。
+    ///
+    /// ⚠️ **不能依赖合成的 Decodable**：实测（projectId=859，`C47F0E6B1704`）
+    /// 服务端明明返回了 `clData`，合成解码却让**所有字段都变成 nil**，
+    /// 于是上层打印「服务端未返回 clData」，`0x86` 一次都没发出去，
+    /// 设备永远停在 `state=3`。
+    ///
+    /// 这里每个字段单独 `decodeIfPresent` 并吞掉该字段的异常：
+    /// 一个字段类型不符，不影响其余字段（尤其是 `clData`）。
+    /// 任何字段解码失败都会记一条 `AppLog` 警告，下次看日志能直接定位。
+    private enum CodingKeys: String, CodingKey {
+        case upMoney, consumeMoney, orderNo, clData, consumeDate
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+
+        /// 单字段容错取值：该字段异常时返回 nil，不拖垮其余字段
+        func tolerant<T: Decodable>(_ key: CodingKeys, _ type: T.Type) -> T? {
+            do {
+                return try c.decodeIfPresent(type, forKey: key)
+            } catch {
+                AppLog.shared.w("bluetoothUpload 字段 \(key.rawValue) 解码失败（按 nil 处理）：\(error)")
+                return nil
+            }
+        }
+
+        upMoney = tolerant(.upMoney, AnyNumber.self)
+        consumeMoney = tolerant(.consumeMoney, AnyNumber.self)
+        orderNo = tolerant(.orderNo, String.self)
+        clData = tolerant(.clData, String.self)
+        consumeDate = tolerant(.consumeDate, String.self)
+    }
 }
 
 // MARK: - 已存在的订单
@@ -296,6 +330,9 @@ struct AnyNumber: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
+        // 显式 null 直接按「没有值」处理：singleValueContainer 在 null 上解码会抛错，
+        // 而这个结构体到处以可选字段出现，抛出去会拖垮整块 data。
+        if c.decodeNil() { value = nil; return }
         if let d = try? c.decode(Double.self) { value = d; return }
         if let i = try? c.decode(Int.self) { value = Double(i); return }
         if let s = try? c.decode(String.self) { value = Double(s); return }
