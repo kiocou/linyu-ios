@@ -875,17 +875,41 @@ final class ShowerFlow: ObservableObject {
             // 补结算看起来次次成功，热水却始终开不了。
             // 因此这里必须回读状态确认设备真的回到空闲，才能对外报"已结清"。
             var cleared = false
-            if let clData = body.clData, !clData.isEmpty,
-               let plain = KlcxkjCrypto.decryptByAes(clData) {
-                let hexPart = plain.contains("-")
-                    ? String(plain.split(separator: "-", maxSplits: 1).last ?? "")
-                    : plain
-                if let bytes = BleFrame.fromHex(hexPart), !bytes.isEmpty {
-                    let ok = await ble.writeBack(bytes)
-                    AppLog.shared.i(ok ? "0x86 写回成功，设备记录已清" : "0x86 写回失败（服务端已记账）")
-                    cleared = ok
+
+            // ⚠️ 兜底：先从原始 JSON 里直接取 clData，再退到模型字段。
+            //
+            // 实测（2026-10-27，projectId=859，设备 C47F0E6B1704）：同一个响应里
+            // `orderNo` / `consumeMoney` / `consumeDate` 都能解出来，唯独 `clData`
+            // 恒为 nil，且 `decodeIssues` 为空——模型解码这条路不可靠。
+            // 而 `clData` 是清除设备离线记录的**唯一**数据源，拿不到就等于永远开不了阀，
+            // 所以这里直接从原始 JSON 兜一层，不把成败押在 `Decodable` 上。
+            var effectiveClData = body.clData
+            if effectiveClData?.isEmpty != false {
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let d = obj["data"] as? [String: Any],
+                   let raw = d["clData"] as? String, !raw.isEmpty {
+                    effectiveClData = raw
+                    AppLog.shared.w("结算：模型字段 clData 为空，已从原始 JSON 兜底取到（\(raw.count) 字符）")
+                }
+            }
+
+            if let rawCl = effectiveClData, !rawCl.isEmpty {
+                let plain = KlcxkjCrypto.decryptByAes(rawCl)
+                if let plain {
+                    let hexPart = plain.contains("-")
+                        ? String(plain.split(separator: "-", maxSplits: 1).last ?? "")
+                        : plain
+                    if let bytes = BleFrame.fromHex(hexPart), !bytes.isEmpty {
+                        let ok = await ble.writeBack(bytes)
+                        AppLog.shared.i(ok ? "0x86 写回成功（\(bytes.count)B），设备记录已清"
+                                        : "0x86 写回失败（服务端已记账），\(bytes.count)B")
+                        cleared = ok
+                    } else {
+                        AppLog.shared.w("结算：clData 解密后不是有效 hex（明文=\(plain)），跳过写回")
+                    }
                 } else {
-                    AppLog.shared.w("结算：clData 解密后不是有效 hex，跳过写回")
+                    AppLog.shared.w("结算：clData 解密失败（原始密文长度=\(rawCl.count)）。"
+                                    + "明文为空说明 AES 参数不对或 base64 解析中断")
                 }
             } else {
                 AppLog.shared.w("结算：服务端未返回 clData，设备记录无法清除"
