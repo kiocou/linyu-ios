@@ -23,7 +23,11 @@ enum BleSettlementCleanup {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard isCurrent(), !Task.isCancelled else { return false }
             }
-            if let state = await readState(), state == 0 { return true }
+            let state = await readState()
+            // ⚠️ 读回之后再校验一次会话：旧查询回来时账户可能已经切换/过期，
+            // 那次读数不能算数（回归项「会话过期后的旧查询不能确认清理」）。
+            guard isCurrent(), !Task.isCancelled else { return false }
+            if state == 0 { return true }
         }
         return false
     }
