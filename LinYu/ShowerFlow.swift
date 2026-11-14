@@ -946,7 +946,7 @@ final class ShowerFlow: ObservableObject {
                 writeBack: {
                     guard let clData = body.clData, !clData.isEmpty,
                           let plain = KlcxkjCrypto.decryptByAes(clData) else {
-                        AppLog.shared.w("结算写回数据无效（服务端已记账，clData 无法解密：\(clData.count) 字符）")
+                        AppLog.shared.w("结算写回数据无效（服务端已记账，clData 长度 \(body.clData?.count ?? 0)）")
                         return
                     }
                     let hexPart = plain.contains("-")
