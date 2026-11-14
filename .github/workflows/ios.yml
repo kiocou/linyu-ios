@@ -63,6 +63,10 @@ jobs:
           "$RUNNER_TEMP/linyu-widget-tests"
           swiftc -swift-version 5 -parse-as-library LinYu/UserReleaseNotes.swift Tests/ReleaseNotesRegression.swift -o "$RUNNER_TEMP/linyu-release-tests"
           "$RUNNER_TEMP/linyu-release-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/BleFrame.swift LinYu/KlcxkjCrypto.swift Tests/CryptoRegression.swift \
+            -o "$RUNNER_TEMP/linyu-crypto-tests"
+          "$RUNNER_TEMP/linyu-crypto-tests"
 
       - name: 生成 Xcode 工程
         run: xcodegen generate

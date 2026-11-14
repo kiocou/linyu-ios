@@ -15,9 +15,16 @@ enum BleSettlementCleanup {
         guard isCurrent(), !Task.isCancelled else { return false }
         await writeBack()
         guard isCurrent(), !Task.isCancelled else { return false }
-        let state = await readState()
-        guard isCurrent(), !Task.isCancelled else { return false }
-        // 0x86 的 ACK 不能代替状态回读；未知、仍有遗留记录均不算已清理。
-        return state == 0
+        // 0x86 的 ACK 不能代替状态回读；但设备落盘有几十~几百毫秒延迟，
+        // 只读一次就判失败会造成「账单已结清、设备清理未确认」的死循环
+        // （2026-11-14 22:54 真机：0x86 刚发完就回读，读到 state=6 被判未清）。
+        for attempt in 0 ..< 3 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard isCurrent(), !Task.isCancelled else { return false }
+            }
+            if let state = await readState(), state == 0 { return true }
+        }
+        return false
     }
 }

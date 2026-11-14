@@ -946,7 +946,7 @@ final class ShowerFlow: ObservableObject {
                 writeBack: {
                     guard let clData = body.clData, !clData.isEmpty,
                           let plain = KlcxkjCrypto.decryptByAes(clData) else {
-                        AppLog.shared.w("结算写回数据无效（服务端已记账）")
+                        AppLog.shared.w("结算写回数据无效（服务端已记账，clData 无法解密：\(clData.count) 字符）")
                         return
                     }
                     let hexPart = plain.contains("-")
@@ -956,7 +956,11 @@ final class ShowerFlow: ObservableObject {
                         return
                     }
                     if !(await self.ble.writeBack(bytes)) {
-                        AppLog.shared.w("结算写回应答未确认（服务端已记账）")
+                        AppLog.shared.w("结算写回应答未确认，300ms 后补发一次")
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        if !(await self.ble.writeBack(bytes)) {
+                            AppLog.shared.w("结算写回补发仍无应答（服务端已记账）")
+                        }
                     }
                 },
                 readState: {

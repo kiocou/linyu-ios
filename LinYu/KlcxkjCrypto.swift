@@ -35,7 +35,18 @@ enum KlcxkjCrypto {
         }
 
         let text = stripPaddingToText(decrypted)
-        return text.isEmpty ? nil : text
+        if !text.isEmpty { return text }
+        // 兜底：末字节恰好落在 1…n 时上面会按「非法 PKCS#7」返回空串，
+        // 但服务端也可能根本没填充。此时按 0x00 截断取值，别把能用的写回数据判死。
+        // 这里保持纯函数：不依赖 AppLog，调用方（结算）会记录失败原因。
+        let plain = truncateAtZero(decrypted)
+        return plain.isEmpty ? nil : plain
+    }
+
+    /// 按 C 字符串语义截断到第一个 0x00
+    private static func truncateAtZero(_ data: Data) -> String {
+        let zeroIndex = data.firstIndex(of: 0) ?? data.count
+        return String(data: Data(data.prefix(zeroIndex)), encoding: .utf8) ?? ""
     }
 
     // MARK: - AES
@@ -63,7 +74,13 @@ enum KlcxkjCrypto {
                     return CCCrypt(
                         CCOperation(kCCDecrypt),
                         CCAlgorithm(kCCAlgorithmAES),
-                        CCOptions(0),                 // 无填充
+                        // ⚠️ 必须**显式**指定 kCCOptionECBMode（= 0x0002）。
+                        // 传 0 得到的是 CBC（IV=nil 即全零 IV）：只有第一块解得对，
+                        // 后面全部错位，末字节再被 PKCS#7 校验判成非法 → 整条 clData
+                        // 被判无效 → 0x86 永远发不出去 → 设备停在 state=3/6 →
+                        // 每次开阀都走「补结算」再失败，彻底卡死。
+                        // 2026-11-14 22:54 真机就是被这一行卡住的。
+                        CCOptions(kCCOptionECBMode),  // ECB + 无填充
                         keyPtr, keyData.count,
                         nil,                          // ECB 不需要 IV
                         dataPtr, data.count,
