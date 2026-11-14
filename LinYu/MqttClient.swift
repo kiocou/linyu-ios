@@ -23,6 +23,21 @@ final class MqttClient: ObservableObject {
 
     /// 服务端地址 —— 与 Android `MqttManager.serverUri` 完全一致
     static let host = "47.107.37.60"
+    /// 服务端 broker **要求认证**：实测匿名 CONNECT 被回 `20 02 00 05`，
+    /// return code 5 = Not authorized。Android 的 `MqttManager` 是带凭证连的，
+    /// 本端此前完全没发 username/password，于是每一单都白试一次 TCP 往返、
+    /// 再刷一条「CONNACK 拒绝」错误，推送通道却从来没真的连上过。
+    ///
+    /// 凭证没配置就干脆不连：MQTT 只是订单事件的加速器，没有它不影响开阀与结算。
+    /// 填法：在 `project.yml` 的 LinYu target `info.properties` 里加
+    /// `LinYuMqttUser` / `LinYuMqttPassword`（或对应的 Info.plist 键），
+    /// 值从 Android `utils/MqttManager.kt` 里抄。
+    static var username: String {
+        Bundle.main.object(forInfoDictionaryKey: "LinYuMqttUser") as? String ?? ""
+    }
+    static var password: String {
+        Bundle.main.object(forInfoDictionaryKey: "LinYuMqttPassword") as? String ?? ""
+    }
     static let port: UInt16 = 1883
     /// keepAlive 10 秒（Android 也是 10）；发 PINGREQ 的间隔取其一半
     static let keepAliveSeconds: UInt16 = 10
@@ -37,6 +52,7 @@ final class MqttClient: ObservableObject {
     private var onMessage: (@MainActor (String) -> Void)?
     private var connectWaiter: CheckedContinuation<Bool, Never>?
     private var connectedPhone = ""
+    private var warnedNoCredential = false
 
     // MARK: - 对外
 
@@ -44,6 +60,14 @@ final class MqttClient: ObservableObject {
     @discardableResult
     func connect(phone: String, onMessage: @escaping @MainActor (String) -> Void) async -> Bool {
         guard !phone.isEmpty else { return false }
+        // 没有凭证就别去撞 broker：省一个 TCP 往返，也省掉一条永远存在的错误日志。
+        if Self.username.isEmpty {
+            if !warnedNoCredential {
+                warnedNoCredential = true
+                AppLog.shared.i("MQTT 未配置账号（LinYuMqttUser），跳过订单推送；开阀与结算不受影响")
+            }
+            return false
+        }
         if connected, connectedPhone == phone { return true }
 
         // 换了手机号（换账号）就先断掉旧会话
@@ -296,10 +320,17 @@ final class MqttClient: ObservableObject {
         var body = Data()
         body.append(mqttString("MQTT"))         // 协议名
         body.append(4)                          // 协议级别 3.1.1
-        body.append(0x02)                       // flags：clean session
+        let user = Self.username
+        let pass = Self.password
+        var flags: UInt8 = 0x02                 // clean session
+        if !user.isEmpty { flags |= 0x80 }      // 有 username
+        if !pass.isEmpty { flags |= 0x40 }      // 有 password
+        body.append(flags)
         body.append(UInt8(keepAliveSeconds >> 8))
         body.append(UInt8(keepAliveSeconds & 0xFF))
         body.append(mqttString(clientId))
+        if !user.isEmpty { body.append(mqttString(user)) }
+        if !pass.isEmpty { body.append(mqttString(pass)) }
 
         var packet = Data([0x10])               // CONNECT
         packet.append(remainingLength(body.count))

@@ -125,6 +125,7 @@ final class BleSession: NSObject, ObservableObject {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.callbackGuard.accepts(p.identifier, generation: generation),
                       self.phase == .connecting || self.phase == .discovering else { return }
+                AppLog.shared.w("BLE 连接超时 \(p.identifier.uuidString.prefix(8))…（\(Int(timeout))s，phase=\(self.phase)）")
                 self.setPhase(.failed("连接超时，请靠近设备重试"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil

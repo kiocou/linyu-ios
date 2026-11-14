@@ -432,8 +432,18 @@ final class ShowerFlow: ObservableObject {
 
         // 1. 连接
         openingText = "正在连接设备…"
-        guard await ble.connect(peripheral: peripheral, using: central) else {
+        var connected = await ble.connect(peripheral: peripheral, using: central)
+        if !connected {
+            // iOS 上同一个 CBPeripheral 首次连接失败后，隔一会儿再连往往能成功
+            // （设备刚从广播/占用状态恢复）。再给一次机会，别让用户点第二遍。
+            AppLog.shared.w("蓝牙首次连接失败：\(ble.statusText)，500ms 后重试一次")
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard workScope.isCurrent else { return }
+            connected = await ble.connect(peripheral: peripheral, using: central)
+        }
+        guard connected else {
             connectedBleSn = nil
+            AppLog.shared.w("蓝牙连接失败：\(ble.statusText)（sn=\(sn)，phase=\(ble.phase)）")
             errorMessage = ble.statusText
             return
         }
@@ -522,9 +532,27 @@ final class ShowerFlow: ObservableObject {
                 startTimer()
                 return
             }
-            ble.disconnect()
-            openingOccupied = true
-            errorMessage = "设备当前不可用，请稍后重试"
+            // 设备正在出水，但本地没有订单 —— 典型来源：上一轮 0x21 应答丢失、
+            // App 被杀、或在别处开的阀。以前这里直接断连 + 一句「设备当前不可用」，
+            // 等于把唯一能关掉这管水的入口也一起扔掉，用户只能去装官方 App。
+            // 改成「仅关阀」恢复页：沿用当前连接，只给结束用水 + 补结算的出口。
+            AppLog.shared.w("蓝牙设备正在出水（state=\(st.state)）但本地无订单，进入仅关阀恢复")
+            Prefs.setStartedAt(sn, Int64(Date().timeIntervalSince1970 * 1000))
+            activeOrder = ActiveOrder(
+                device: device,
+                snCode: sn,
+                orderNo: "",
+                consumeDate: "",
+                protocolType: st.protocolType,
+                randomNumber: st.randomNumber,
+                startedAt: Date(),
+                preDeductMoney: displayPreDeduct(device),
+                channel: .ble,
+                autoDisConSec: 0
+            )
+            openingText = ""
+            startTimer()
+            toast = "设备正在出水，已进入恢复模式：点「结束用水」可关阀并补结算"
             return
         }
 
@@ -590,7 +618,35 @@ final class ShowerFlow: ObservableObject {
 
         // 4. 写入设备（真正开阀）
         openingText = "正在写入费率并开阀…"
-        guard await ble.writeRate(downBytes) else {
+        let rateAcked = await ble.writeRate(downBytes)
+
+        // ⚠️ 0x21 应答丢失 ≠ 没开阀。130B 的费率帧只要被设备收全，阀就会开，
+        // 丢的常常只是那一条回执（2026-11-14 真机日志：7 片 didWrite 全部确认、
+        // 22:04:11 等不到应答，而服务端 22:03:59 已建单、设备确实在出水）。
+        // 以前这里直接当失败处理，代价是 orderNo 被丢掉：使用页不出、监控不起、
+        // 关阀也没有入口，用户只能去官方 App 收尾。所以补一步云端通道早就有的复核
+        // （对照 CloudShower.open 的 9×700ms 轮询）。
+        var confirmed = rateAcked
+        if !rateAcked {
+            AppLog.shared.w("0x21 无应答，改用 0x23 复核设备是否已开阀")
+            for attempt in 1 ... 3 {
+                guard workScope.isCurrent else { return }
+                openingText = "正在确认开阀结果…（\(attempt)/3）"
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                guard let recheck = await ble.query(timeout: 4) else { continue }
+                let macOK = recheck.mac.isEmpty || recheck.mac.uppercased() == expectMac.uppercased()
+                guard macOK else {
+                    AppLog.shared.e("开阀复核读到别的设备 MAC：\(recheck.mac)，放弃记账")
+                    break
+                }
+                if !recheck.isIdle {
+                    confirmed = true
+                    AppLog.shared.w("0x21 应答丢失但设备已进入 state=\(recheck.state)，按已开阀记账")
+                    break
+                }
+            }
+        }
+        guard confirmed else {
             ble.disconnect()
             errorMessage = "开启结果未确认，请检查是否出水，勿重复开启"
             return
