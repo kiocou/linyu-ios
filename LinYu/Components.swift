@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// 无淡出、缩放或系统按压背景；用于箭头、模式切换和卡片编辑。
+struct InstantButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentTransition(.identity)
+            .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+}
+
+enum PageLayout {
+    static let titleHeight: CGFloat = 40
+    static let headerHeight: CGFloat = 60
+    static let horizontalInset: CGFloat = 20
+}
+
 // MARK: - 尾部优先省略
 
 /// 单行文本，**尾部优先省略**（保留结尾）。
@@ -97,7 +112,7 @@ struct LinYuToast: View {
     var body: some View {
         HStack(spacing: 12) {
             // 和 Android 一样用 app_logo（`R.drawable.app_logo`，32dp）
-            Image("app_logo")
+            Image("LoginLogo")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 32, height: 32)
@@ -107,7 +122,8 @@ struct LinYuToast: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundColor(.white)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.8)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -116,7 +132,7 @@ struct LinYuToast: View {
         .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
         .padding(.horizontal, 24)
         // 宽度上限：超长文案（「已绑定寝室：龙川北苑-3号楼南-3层-320」）要能截断
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: 420, alignment: .center)
     }
 }
 

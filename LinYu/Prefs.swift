@@ -26,6 +26,24 @@ enum Prefs {
         get { d.string(forKey: "lastDeviceEmoji") ?? "🚿" }
         set { d.set(newValue, forKey: "lastDeviceEmoji") }
     }
+    /// 设备**原始名**（未过 `formatDeviceName`）。
+    ///
+    /// 寝室筛选的 key 是从原始名「掐头去尾」得到的，拿显示名去比永远对不上
+    /// （显示名被剥掉了楼层／把结尾的「洗手台」换成了「房」）。
+    static var lastDeviceRawName: String {
+        get { d.string(forKey: "lastDeviceRawName") ?? "" }
+        set { d.set(newValue, forKey: "lastDeviceRawName") }
+    }
+    /// 设备类型说明（「卫生间热水器」这类），卡片副标题用
+    static var lastDeviceTypeName: String {
+        get { d.string(forKey: "lastDeviceTypeName") ?? "" }
+        set { d.set(newValue, forKey: "lastDeviceTypeName") }
+    }
+    /// 预扣金额（元）。小组件／恢复订单拿不到 DeviceInfo 时靠它显示「预扣」
+    static var lastDeviceWithholdMoney: Double {
+        get { d.double(forKey: "lastDeviceWithholdMoney") }
+        set { d.set(newValue, forKey: "lastDeviceWithholdMoney") }
+    }
 
     // MARK: - 寝室筛选
 
@@ -58,7 +76,7 @@ enum Prefs {
 
     // MARK: - 用户确认过「需要蓝牙」的设备
 
-    /// 306 之后用户选了「用蓝牙开启」的设备。
+    /// 306 之后用户选了「蓝牙开启」的设备。
     ///
     /// 下次再开这台就**直接走蓝牙**，不再白试一次云端、再吃一句 306。
     /// 存的是 snCode。
@@ -123,7 +141,7 @@ enum Prefs {
         set { d.set(newValue, forKey: "trendChartType") }
     }
     static var trendCollapsed: Bool {
-        get { d.object(forKey: "trendCollapsed") as? Bool ?? false }
+        get { d.object(forKey: "trendCollapsed") as? Bool ?? true }
         set { d.set(newValue, forKey: "trendCollapsed") }
     }
 
@@ -132,6 +150,140 @@ enum Prefs {
     static var lastConsumeYuan: Double {
         get { d.double(forKey: "lastConsumeYuan") }
         set { d.set(newValue, forKey: "lastConsumeYuan") }
+    }
+
+    /// 某台设备的「上次消费」，0 表示还没有记录。
+    ///
+    /// ⚠️ 必须**按 snCode 分开存**：全局一个值时，换设备后卡片会顶着新设备的名字
+    /// 显示上一台的金额（Android v3.1.0 修的就是这个）。
+    static func lastConsumeFor(_ snCode: String) -> Double {
+        guard !snCode.isEmpty else { return 0 }
+        return d.double(forKey: "consume_\(snCode)")
+    }
+
+    /// 记一笔消费。金额为 0 时不动已有记录，避免「本次无消费」把历史值抹掉。
+    static func consumeRecordedAt(_ snCode: String) -> Double { d.double(forKey: "consume_time_\(snCode)") }
+    static func recordConsume(_ snCode: String, amount: Double, atMs: Double = Date().timeIntervalSince1970 * 1000) {
+        guard amount > 0, !snCode.isEmpty else { return }
+        d.set(amount, forKey: "consume_\(snCode)")
+        d.set(atMs, forKey: "consume_time_\(snCode)")
+        d.set(Date().timeIntervalSince1970 * 1000, forKey: "lastConsumeTime")
+    }
+
+    // MARK: - 每台设备的计时 / 自动关停
+    //
+    // 对照 Android `PrefsHelper.getStartedAt / setAutoDisconRemain`。
+    // ⚠️ 必须**落盘**：App 被杀/切后台后重新打开，计时和倒计时都要接着走。
+
+    static func startedAt(_ snCode: String) -> Int64 {
+        guard !snCode.isEmpty else { return 0 }
+        return Int64(d.double(forKey: "startedAt_\(snCode)"))
+    }
+
+    static func setStartedAt(_ snCode: String, _ ms: Int64) {
+        guard !snCode.isEmpty else { return }
+        d.set(Double(ms), forKey: "startedAt_\(snCode)")
+    }
+
+    /// 自动关停剩余秒数。—— 存的是**截止时间戳**，按当前时间算，不会因计时器延迟走偏
+    static func autoDisconRemain(_ snCode: String) -> Int {
+        guard !snCode.isEmpty else { return 0 }
+        let deadline = d.double(forKey: "autoDiscon_\(snCode)")
+        guard deadline > 0 else { return 0 }
+        let remain = Int((deadline - Date().timeIntervalSince1970 * 1000) / 1000)
+        return max(0, remain)
+    }
+
+    static func setAutoDisconRemain(_ snCode: String, seconds: Int) {
+        guard !snCode.isEmpty else { return }
+        if seconds <= 0 {
+            d.removeObject(forKey: "autoDiscon_\(snCode)")
+        } else {
+            d.set(Date().timeIntervalSince1970 * 1000 + Double(seconds) * 1000,
+                  forKey: "autoDiscon_\(snCode)")
+        }
+    }
+
+    static func clearAutoDiscon(_ snCode: String) {
+        guard !snCode.isEmpty else { return }
+        d.removeObject(forKey: "autoDiscon_\(snCode)")
+    }
+
+    // MARK: - 蓝牙会话
+
+    /// 蓝牙会话（JSON 字符串）。
+    ///
+    /// ⚠️ 和 Android 一样**单独落盘**：结算/补结算要靠会话里的 protocolType / randomNumber，
+    /// 而它们只在开阀那一刻从设备读得到；App 被杀重开后只能从这里回读。
+    static var bleSessionJson: String {
+        get { d.string(forKey: "bleSessionJson") ?? "" }
+        set { d.set(newValue, forKey: "bleSessionJson") }
+    }
+
+    /// 背景装扮页上次查看的作用域（home / shower）—— 对照 Android `PrefsHelper.backgroundScope`。
+    /// 这不是账号数据，退出登录不清。
+    static var backgroundScope: String {
+        get { d.string(forKey: "backgroundScope") ?? "home" }
+        set { d.set(newValue, forKey: "backgroundScope") }
+    }
+
+    // MARK: - 通知按钮触发的待处理动作
+    //
+    // iOS 的通知按钮回调**不能**直接发关阀请求：后台既连不上蓝牙也不保证网络。
+    // 所以保存目标动作，回到前台由界面执行（对照 Android 通知 PendingIntent 的落点）。
+
+    // 动作改由 AppNotifications 持有带设备/订单身份的队列；不再保存无目标的布尔标记。
+
+    // MARK: - 退出登录清理
+
+    /// 清掉**账号相关**的本地数据 —— 逐条对照 Android 的 `PrefsHelper.clear`。
+    ///
+    /// ## 为什么不能简单粗暴清空
+    ///
+    /// - **手填的初始余额要留着**：它跟人动手填过的事实有关，换号后重填很恼人
+    ///   （Android 也是先备份、清完再写回）。
+    /// - **被挤号时要保留订单恢复所需的键**（`activeOrders` / `lastDevice*` /
+    ///   `startedAt_*` / `autoDiscon_*`）：水还在流，重登之后得能找到停止入口。
+    ///   正常退出登录时这些必须清，否则换账号会看到上一任的设备在「使用中」。
+    ///
+    /// ⚠️ 这里的 key 列表与 Android 一一对应，加字段时两边要一起改。
+    static func clear(preserveActiveRecovery: Bool = false) {
+        let keepBalance = manualBalance
+        let keepBalanceTime = manualBalanceTime
+
+        for key in [
+            "boundRoom",
+            "lastConsumeMoney", "lastConsumeTime",
+            "campusBalance", "walletBalance", "schoolName",
+            "pendingSettlements",
+            "pendingStopRequest", "pendingOpenShower",
+            // 设备级知识，但和账号绑定过（用户确认过「这台要蓝牙」），换号不适用
+            "bleDevices",
+        ] {
+            d.removeObject(forKey: key)
+        }
+
+        // 动态前缀：账单缓存 / 每设备消费
+        for key in d.dictionaryRepresentation().keys {
+            if key.hasPrefix("consume_") || key.hasPrefix("billCache_") {
+                d.removeObject(forKey: key)
+            }
+        }
+
+        if !preserveActiveRecovery {
+            ActiveOrderStore.clear()
+            for key in d.dictionaryRepresentation().keys where
+                key == "activeOrders" || key.hasPrefix("lastDevice") ||
+                key.hasPrefix("startedAt_") || key.hasPrefix("autoDiscon_") {
+                d.removeObject(forKey: key)
+            }
+        }
+
+        // 手填余额原样写回
+        manualBalance = keepBalance
+        manualBalanceTime = keepBalanceTime
+
+        AppLog.shared.i("已清理账号本地数据（保留恢复态：\(preserveActiveRecovery)）")
     }
 }
 

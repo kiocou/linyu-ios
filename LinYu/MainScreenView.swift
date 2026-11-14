@@ -13,6 +13,7 @@ import SwiftUI
 /// [设备卡片…]
 /// ```
 struct MainScreenView: View {
+    @ObservedObject private var widgets = WidgetBridge.shared
     @EnvironmentObject private var session: Session
     @Environment(\.appColors) private var colors
     @Environment(\.isDarkMode) private var isDark
@@ -24,19 +25,19 @@ struct MainScreenView: View {
     @ObservedObject var store: AppDataStore
     /// 由 MainTabView 注入，用水页也在那一层切换
     @ObservedObject var flow: ShowerFlow
+    let onResumeOrder: () -> Void
 
     /// snCode → 台账
     @State private var resolved: [String: DeviceInfo] = [:]
     @State private var resolving: Set<String> = []
     @State private var detailDevice: DeviceInfo?
-    @State private var showLog = false
     @State private var showQr = false
 
     /// 账单（余额估算要用）
     
     
     /// 寝室筛选条件（ViewModel 的等价物：改完要立刻刷新列表）
-    @State private var boundRoom = Prefs.boundRoom
+    @AppStorage("boundRoom") private var boundRoom = ""
     /// 下拉刷新中
     @State private var refreshing = false
 
@@ -44,7 +45,10 @@ struct MainScreenView: View {
 
     /// 能解析出 snCode 的设备（解析不出来的不是这批水表）
     private var scanned: [DiscoveredPeripheral] {
-        scanner.devices.filter { $0.parsedSnCode != nil }
+        scanner.devices.filter { device in
+            guard let sn = device.parsedSnCode else { return false }
+            return store.deviceInfos[sn] != nil
+        }
     }
 
     /// 按寝室筛选后的列表
@@ -70,19 +74,21 @@ struct MainScreenView: View {
 
     var body: some View {
         ZStack {
-            colors.background.ignoresSafeArea()
-
             ScrollView {
                 LazyVStack(spacing: 16) {
                     // ⚠️ 顶部留白和账单页 / 我的页一致（都是 20），
                     // 否则三个 tab 的标题不在同一高度
-                    Color.clear.frame(height: 20)
                     header
 
-                    // 使用中的设备
-                    if let order = flow.activeOrder {
+                    // 使用中的设备（**可以有多台**，对照 Android `activeOrders.forEach`）
+                    if !flow.restoredOrders.isEmpty {
                         sectionTitle("使用中的设备")
-                        activeOrderCard(order)
+                        ForEach(flow.restoredOrders, id: \.snCode) { record in
+                            restoredOrderCard(
+                                record,
+                                isCurrent: flow.activeOrder?.snCode == record.snCode
+                            )
+                        }
                     } else if !Prefs.lastDeviceSnCode.isEmpty {
                         sectionTitle("上次使用设备")
                         lastDeviceCard
@@ -106,17 +112,19 @@ struct MainScreenView: View {
                         deviceCard(d)
                     }
 
-                    Color.clear.frame(height: 110)   // 给悬浮导航栏留位置
+                    Color.clear.frame(height: 100)   // 给悬浮导航栏留位置
                 }
                 .padding(.horizontal, 20)
+                .padding(.top, 20)
             }
             // ⚠️ 裁剪：不加的话滚动时内容会画到状态栏/导航栏区域上，
             // 表现为「文字盖住状态栏」。Android 那边是 statusBarsPadding() 保证的，
             // iOS 靠「内容留在安全区内 + 这里裁掉溢出」等价实现。
             .clipped()
-        }
-        .sheet(isPresented: $showLog) {
-            NavigationStack { LogView() }
+            .refreshable {
+                await refreshAll()
+                if flow.restoredOrders.isEmpty { scanner.start() }
+            }
         }
         .fullScreenCover(isPresented: $showQr) {
             QrScanView { sn in
@@ -131,11 +139,15 @@ struct MainScreenView: View {
             scanner.activeSession = flow.ble
             // ⚠️ 首次进页面才拉账单；之后切回来直接复用容器里的缓存
             await store.loadIfNeeded()
+            guard !Task.isCancelled else { return }
             // ⚠️ 只在**还没有扫到设备**时才启动扫描。
             // 之前每次切回首页都重新 start()，而 start() 会清空列表，
             // 于是设备先闪回广播名（KLCXKJ-Water）再变回房间名。
             // Android 那边是下拉刷新才重新扫描。
-            if scanner.devices.isEmpty { scanner.start() }
+            if scanner.devices.isEmpty && flow.restoredOrders.isEmpty { scanner.start() }
+            for device in scanner.devices {
+                if let sn = device.parsedSnCode { await resolveDevice(sn) }
+            }
         }
         .onChange(of: scanner.devices) { list in
             for d in list {
@@ -149,6 +161,8 @@ struct MainScreenView: View {
         // 弹窗全部走**居中卡片**（Material3 AlertDialog 的样子），
         // 不用 .sheet —— 那会从底部升上来，和 Android 完全不一样
         .overlay { dialogLayer }
+        .task { openWidgetDevice() }
+        .onChange(of: widgets.pendingDeviceSN) { _ in openWidgetDevice() }
     }
 
     // MARK: - 弹窗层
@@ -159,35 +173,10 @@ struct MainScreenView: View {
             DeviceDetailDialogView(
                 device: d,
                 isActive: isDeviceActive(d),
-                isOwner: true,
+                // 他人使用中：按钮置灰，避免拿别人的订单去开阀
+                isOwner: flow.isOwnerFor(d.snCode ?? ""),
                 onDismiss: { detailDevice = nil },
                 onConfirm: { confirmOpen(d) }
-            )
-        }
-
-        if flow.isStarting {
-            OpeningDialogView(progress: flow.openingText)
-        }
-
-        if let msg = flow.errorMessage {
-            ShowerErrorDialogView(message: msg) { flow.clearError() }
-        }
-
-        if let d = flow.bleConfirmDevice {
-            BleRetryDialogView(
-                deviceName: d.displayName,
-                onConfirm: { Task { await flow.confirmBleOpen() } },
-                onDismiss: { flow.dismissBleConfirm() }
-            )
-        }
-
-        if let notice = flow.autoClose {
-            AutoCloseDialogView(
-                deviceName: notice.deviceName,
-                elapsedSeconds: notice.elapsedSeconds,
-                consumed: notice.consumed,
-                loading: notice.loading,
-                onConfirm: { flow.dismissAutoClose() }
             )
         }
     }
@@ -195,11 +184,12 @@ struct MainScreenView: View {
     // MARK: - 顶部
 
     private var header: some View {
-        HStack(alignment: .center) {
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("淋浴")
                     .font(.system(size: 30, weight: .bold))
                     .foregroundStyle(colors.textPrimary)
+                    .frame(height: PageLayout.titleHeight)
                 Text("Hualala")
                     .font(.system(size: 14))
                     .foregroundStyle(colors.textSecondary)
@@ -211,15 +201,22 @@ struct MainScreenView: View {
                 } content: {
                     VectorIconView(icon: DeviceIcons.qrScanner, size: 20, tint: colors.textPrimary)
                 }
+                .accessibilityLabel("扫码绑定设备")
                 circleIconButton {
-                    Task { await refreshAll(); scanner.start() }
+                    Task {
+                        await refreshAll()
+                        if flow.activeOrder == nil { scanner.start() }
+                    }
                 } content: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(colors.textPrimary)
                 }
+                .disabled(refreshing)
+                .accessibilityLabel("刷新附近设备")
             }
         }
+        .frame(height: PageLayout.headerHeight, alignment: .top)
     }
 
     private func circleIconButton<C: View>(
@@ -245,20 +242,26 @@ struct MainScreenView: View {
 
     // MARK: - 使用中的设备
 
-    private func activeOrderCard(_ order: ActiveOrder) -> some View {
+    // MARK: - 上次使用设备
+
+    /// 已落盘、但未进入使用页的订单（App 重启 / 被挤号重登后的恢复入口）。
+    ///
+    /// ⚠️ 这张卡不能省：没有它，用户重开 App 后**完全不知道水还在流**，
+    /// 也找不到关阀入口——只能等账单出来才知道被扣了钱。
+    private func restoredOrderCard(_ record: ActiveOrderRecord, isCurrent: Bool = false) -> some View {
         HStack(spacing: 14) {
             DeviceGlyph(
-                emoji: order.device.typeEmoji,
+                emoji: record.deviceEmoji.isEmpty ? "🚿" : record.deviceEmoji,
                 boxSize: 48,
                 cornerRadius: 14,
                 emojiSize: 22,
                 iconSize: 26,
-                background: DeviceGlyph.background(for: order.device.typeEmoji, colors: colors)
+                background: DeviceGlyph.background(for: record.deviceEmoji, colors: colors)
             )
 
             VStack(alignment: .leading, spacing: 4) {
                 TailEllipsisText(
-                    text: order.device.displayName,
+                    text: record.deviceName.isEmpty ? "热水器" : record.deviceName,
                     fontSize: 15,
                     weight: .semibold,
                     color: colors.textPrimary
@@ -279,20 +282,25 @@ struct MainScreenView: View {
             Spacer(minLength: 0)
 
             Button("恢复") {
-                // 已经在用这一单，直接回到用水页（activeOrder 本来就在）
-                flow.toast = "正在使用中"
+                if isCurrent {
+                    onResumeOrder()
+                } else {
+                    Task {
+                        await flow.resume(record: record)
+                        if flow.activeOrder?.snCode == record.snCode { onResumeOrder() }
+                    }
+                }
             }
             .buttonStyle(AccentButtonStyle(colors: colors))
         }
         .padding(16)
-        .linyuCard(colors)
+        .background(colors.activeBg)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(colors.border, lineWidth: 0.8)
         )
     }
-
-    // MARK: - 上次使用设备
 
     private var lastDeviceCard: some View {
         HStack(spacing: 14) {
@@ -366,7 +374,7 @@ struct MainScreenView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(colors.textSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(InstantButtonStyle())
             Spacer()
         }
     }
@@ -378,7 +386,7 @@ struct MainScreenView: View {
                     .tint(colors.accent)
                     .scaleEffect(0.65)
                     .frame(width: 14, height: 14)
-                Text(scanner.stateText.isEmpty ? "扫描中..." : scanner.stateText)
+                Text("扫描中...")
                     .font(.system(size: 13))
                     .foregroundStyle(colors.textSecondary)
             }
@@ -409,7 +417,7 @@ struct MainScreenView: View {
         let sigLabel = "信号强度: \(d.rssi) dBm"
 
         return Button {
-            Task { await openDetail(sn) }
+            openDetail(sn)
         } label: {
             HStack(spacing: 14) {
                 DeviceGlyph(
@@ -427,6 +435,7 @@ struct MainScreenView: View {
                         .foregroundStyle(colors.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     Text(sigLabel)
                         .font(.system(size: 13))
                         .foregroundStyle(sigColor)
@@ -434,7 +443,7 @@ struct MainScreenView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(colors.textSecondary)
                 }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 14, weight: .medium))
@@ -461,28 +470,67 @@ struct MainScreenView: View {
     /// 查台账。结果存在 `AppDataStore` 里（跨页面保留），
     /// 所以切走再切回来**不会**再显示一次广播名
     private func resolveDevice(_ sn: String) async {
+        defer { resolving.remove(sn) }
         await store.deviceInfo(sn)
+        // 台账拿到之后再问一次「这台有没有订单」——对照 Android `fetchInfo`：
+        // 用使用码在键盘上开机后，这里能发现「已经有订单」，首页就会出现使用中卡片
+        guard let info = store.deviceInfos[sn] else { return }
+        scanner.register(info: info, advertisedSN: sn)
+        if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) }
     }
 
-    private func openDetail(_ sn: String) async {
-        if store.deviceInfos[sn] == nil {
-            await resolveDevice(sn)
-        }
-        guard let info = store.deviceInfos[sn] else {
-            flow.toast = "查不到这台设备的信息（可能不是本校设备）"
+    private func openDetail(_ sn: String) {
+        // Android fetchDeviceInfo：缓存命中立即展示，查询占用不挡住点击反馈。
+        if let info = store.deviceInfos[sn] {
+            scanner.register(info: info, advertisedSN: sn)
+            detailDevice = info
+            Task { if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) } }
             return
         }
-        detailDevice = info
+        Task {
+            await store.deviceInfo(sn)
+            guard let info = store.deviceInfos[sn] else {
+                flow.toast = store.deviceLookupMessages[sn] ?? "获取设备信息失败，请稍后重试"
+                return
+            }
+            detailDevice = info
+            scanner.register(info: info, advertisedSN: sn)
+            if let ledgerSN = info.snCode { await flow.refreshDeviceStatus(ledgerSN) }
+        }
     }
 
+    private func openWidgetDevice() {
+        guard let sn = widgets.pendingDeviceSN, !sn.isEmpty else { return }
+        widgets.pendingDeviceSN = nil
+        openDetail(sn)
+    }
+
+    /// 这台设备有没有活跃订单。
+    ///
+    /// ⚠️ 不能只比 `activeOrder`：那只是「使用页当前显示的那一单」，
+    /// 同时开着两台时，另一台也是「使用中」，点它应该恢复而不是再开一次。
     private func isDeviceActive(_ device: DeviceInfo) -> Bool {
-        guard let order = flow.activeOrder else { return false }
-        return order.snCode == (device.snCode ?? "")
+        let sn = device.snCode ?? ""
+        guard !sn.isEmpty else { return false }
+        return flow.restoredOrders.contains { $0.snCode == sn } || !flow.isOwnerFor(sn)
     }
 
     /// 详情弹窗里点了「开始使用」
     private func confirmOpen(_ device: DeviceInfo) {
+        detailDevice = nil
         let sn = device.snCode ?? ""
+        if let record = flow.restoredOrders.first(where: { $0.snCode == sn }) {
+            // 已经在用：当前显示的那一单回使用页，其它单走恢复流程
+            if flow.activeOrder?.snCode == sn {
+                onResumeOrder()
+            } else {
+                Task {
+                    await flow.resume(record: record)
+                    if flow.activeOrder?.snCode == record.snCode { onResumeOrder() }
+                }
+            }
+            return
+        }
         let peripheral = scanner.peripheral(forSn: sn)
         let central = scanner.manager
 
@@ -494,6 +542,7 @@ struct MainScreenView: View {
         }
         Task {
             await flow.open(device: device, peripheral: peripheral, central: central)
+            if flow.activeOrder?.snCode == sn { onResumeOrder() }
         }
     }
 
@@ -513,20 +562,14 @@ struct MainScreenView: View {
             info = cached
         } else {
             do {
-                let data = try await ApiClient.get(
-                    "/device/info/mac",
-                    query: ["macAddress": sn],
-                    tag: "deviceInfo"
-                )
-                let resp = try ApiClient.decode(DeviceInfo.self, from: data, path: "deviceInfo")
-                guard resp.success, let d = resp.data else {
-                    flow.toast = "获取设备信息失败"
+                guard let d = try await DeviceLookup.load(sn) else {
+                    flow.toast = "未查询到该设备，请检查设备码"
                     return
                 }
                 await store.putDeviceInfo(d, sn: sn)
                 info = d
             } catch {
-                flow.toast = "获取设备信息失败：\(error.localizedDescription)"
+                flow.toast = "获取设备信息失败：\(LoginFeedback.message(error))"
                 return
             }
         }
@@ -541,13 +584,14 @@ struct MainScreenView: View {
             // 云端通道，不需要连接对象
             await flow.open(device: info, peripheral: nil, central: nil)
         }
+        if flow.activeOrder?.snCode == (info.snCode ?? sn) { onResumeOrder() }
     }
 
     /// 扫码绑定：扫到 snCode 后查台账并直接打开详情
     private func bindBySn(_ sn: String) async {
         await resolveDevice(sn)
         guard let info = store.deviceInfos[sn] else {
-            flow.toast = "未查到该设备（\(sn)）"
+            flow.toast = store.deviceLookupMessages[sn] ?? "未查询到该设备，请检查设备码"
             return
         }
         detailDevice = info

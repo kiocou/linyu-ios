@@ -9,6 +9,53 @@ enum BillService {
     /// 月初打开 App 会看到空列表（像是「没消费过」），而消费趋势里 7 天视图也会缺数据。
     /// Android 那边同样拉 3 个月（`for (i in 0..2)`）。
     static func loadHistory() async -> [BillDTO] {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        // 结算兜底保留已成功取得的月份，不因其它月份失败丢弃有效订单。
+        var all: [BillDTO] = []
+        for month in recentMonths() {
+            guard SessionWork.isCurrent(generation) else { return [] }
+            if let list = try? await loadMonth(month) { all.append(contentsOf: list) }
+        }
+        guard SessionWork.isCurrent(generation) else { return [] }
+        return all
+    }
+
+    /// 页面缓存只能接受完整的成功结果，不能把失败或取消当作空账单。
+    static func loadHistoryChecked() async throws -> [BillDTO] {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        var all: [BillDTO] = []
+        for month in recentMonths() {
+            try Task.checkCancellation()
+            guard SessionWork.isCurrent(generation) else { throw CancellationError() }
+            all.append(contentsOf: try await loadMonth(month))
+        }
+        guard SessionWork.isCurrent(generation) else { throw CancellationError() }
+        AppLog.shared.i("账单：拉取 \(all.count) 条（最近 3 个月）")
+        return all
+    }
+
+    /// 拉最近 3 个月账单；**任一月请求失败就返回 nil**
+    ///
+    /// 和 `loadHistory()` 的区别：后者把失败仍当空表合并，适合帛页面兜底、不适合对账。
+    /// 对账拿到的必须是完整账单，否则「没匹配到」可能只是因为那一个月没拉到，
+    /// 于是把一条明明已经结算的记录当成「仍然待对账」一直留着。
+    static func loadHistoryOrNil() async -> [BillDTO]? {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        var all: [BillDTO] = []
+        for month in recentMonths() {
+            guard SessionWork.isCurrent(generation) else { return nil }
+            do {
+                all.append(contentsOf: try await loadMonth(month))
+            } catch {
+                AppLog.shared.w("账单月份 \(month) 拉取失败：\(error.localizedDescription)")
+                return nil
+            }
+        }
+        guard SessionWork.isCurrent(generation) else { return nil }
+        return all
+    }
+
+    private static func recentMonths() -> [String] {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM"
@@ -16,15 +63,11 @@ enum BillService {
         var cal = Calendar(identifier: .gregorian)
         cal.locale = Locale(identifier: "en_US_POSIX")
 
-        var all: [BillDTO] = []
-        for i in 0 ..< 3 {
-            let month = fmt.string(from: Date().addingTimeInterval(TimeInterval(-i) * 30 * 24 * 3600))
-            if let list = try? await loadMonth(month) {
-                all.append(contentsOf: list)
-            }
+        let now = Date()
+        return (0 ..< 3).map { i in
+            let date = cal.date(byAdding: .month, value: -i, to: now) ?? now
+            return fmt.string(from: date)
         }
-        AppLog.shared.i("账单：拉取 \(all.count) 条（最近 3 个月）")
-        return all
     }
 
     /// 单月账单。`billRequestType=2` 是 Android 用的固定值。
@@ -74,6 +117,41 @@ enum BillService {
         await fetch(WalletData.self, path: "/account/wallet", tag: "wallet")?.data
     }
 
+    /// 钱包接口的一次「探询」结果 —— 挤号心跳专用。
+    ///
+    /// ## 为什么不能用 `loadWallet()`
+    ///
+    /// `loadWallet()` 把失败吞成 `nil`，调用方**分不清**「没数据」和「登录失效」。
+    /// 而挤号检测恰恰只关心后者，所以这里必须把 `success` / `errorCode` / 文案都带出来
+    /// （对照 Android 的 `getWalletSafe`）。
+    struct WalletProbe {
+        let ok: Bool
+        let message: String?
+        let code: Int?
+        let wallet: WalletData?
+    }
+
+    static func probeWallet() async -> WalletProbe {
+        do {
+            let data = try await ApiClient.get("/account/wallet", tag: "walletHeartbeat")
+            let resp = try ApiClient.decodeShell(WalletData.self, from: data, path: "walletHeartbeat")
+            return WalletProbe(
+                ok: resp.success,
+                message: resp.displayMessage,
+                code: resp.errorCode,
+                wallet: resp.data
+            )
+        } catch let error as ApiError {
+            // 只有 HTTP 401/403 是确定的会话失效；其余（断网、超时、解析）不算挤号
+            if case let .unauthorized(status) = error {
+                return WalletProbe(ok: false, message: "登录已失效", code: status, wallet: nil)
+            }
+            return WalletProbe(ok: false, message: nil, code: nil, wallet: nil)
+        } catch {
+            return WalletProbe(ok: false, message: nil, code: nil, wallet: nil)
+        }
+    }
+
     static func loadCampusInfo() async -> CampusUserInfo? {
         await fetch(CampusUserInfo.self, path: "/settlement/campus/userInfo", tag: "campus")?.data
     }
@@ -86,15 +164,51 @@ enum BillService {
         await fetch(ProjectInfo.self, path: "/project/info/triple", tag: "projectInfo")?.data
     }
 
+    static func loadBindCardInfo() async -> AccountInfo? {
+        await fetch(AccountInfo.self, path: "/account/card/getBindCardInfo", tag: "bindCardInfo")?.data
+    }
+
+    // MARK: - 未支付账单 / 手动代扣
+
+    /// 未支付账单列表（残留账单）
+    ///
+    /// 就是俗称的「残留账单」—— 12 点后结束用水、或者一卡通余额不足的时候，
+    /// 服务端结算没扣成，账单留在待扣状态。返回**扁平结构**（不套 consumeBillDTO）。
+    ///
+    /// ⚠️ 失败返回 nil，**不是空数组**：调用方要靠这个区别决定「保持原样」还是「真的没有」。
+    static func loadUnpaid() async -> [UnpaidBill]? {
+        do {
+            let data = try await ApiClient.post(
+                "/order/weixinScorePay/unPay/queryBill",
+                form: [:],
+                tag: "unpaid"
+            )
+            let resp = try ApiClient.decodeShell([UnpaidBill].self, from: data, path: "unpaid")
+            guard resp.success else {
+                AppLog.shared.w("未支付账单查询失败：\(resp.displayMessage ?? "")\(resp.errorCode.map { "（\($0)）" } ?? "")")
+                return nil
+            }
+            return resp.data ?? []
+        } catch {
+            AppLog.shared.w("未支付账单查询异常：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// 把两个余额来源刷进 Prefs（界面读 Prefs，所以刷完要手动触发刷新）
-    static func refreshBalances() async {
+    @MainActor static func refreshBalances() async {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return }
         if let c = await loadCampusInfo() {
+            guard SessionWork.isCurrent(generation) else { return }
             Prefs.campusBalance = c.amount ?? ""
             AppLog.shared.i("一卡通余额：\(c.amount ?? "空")")
         }
+        guard SessionWork.isCurrent(generation) else { return }
         if let w = await loadWallet() {
-            // accountRealMoney 是数字、money 是字符串，统一走 AnyNumber 后取 Double
-            let v = w.realYuan ?? w.moneyYuan
+            guard SessionWork.isCurrent(generation) else { return }
+            // Android refreshWallet：money 已是元，accountRealMoney 为厘，不能混用。
+            let v = w.moneyYuan
             Prefs.walletBalance = v.map { String($0) } ?? ""
             AppLog.shared.i("钱包余额：\(v.map { String($0) } ?? "空")")
         }
@@ -188,7 +302,8 @@ enum TrendDisplayPolicy {
 
     /// 横轴最多 5 个标签
     static func axisIndices(size: Int, maxLabels: Int = 5) -> [Int] {
-        if size <= 0 { return [] }
+        if size <= 0 || maxLabels <= 0 { return [] }
+        if maxLabels == 1 { return [0] }
         if size <= maxLabels { return Array(Set([0, size / 2, size - 1])).sorted() }
         let step = Double(size - 1) / Double(maxLabels - 1)
         var out: [Int] = []

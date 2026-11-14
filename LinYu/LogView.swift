@@ -1,143 +1,118 @@
 import SwiftUI
-import UIKit
 
-/// 运行日志查看与导出
 struct LogView: View {
+    let onBack: () -> Void
     @ObservedObject private var log = AppLog.shared
-    @Environment(\.dismiss) private var dismiss
-
+    @Environment(\.appColors) private var colors
     @State private var filter: Filter = .all
     @State private var searchText = ""
-    @State private var exportURL: URL?
-    @State private var showShare = false
-    @State private var note = ""
+    private struct Export: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+    @State private var export: Export?
+    @State private var exportFailed = false
 
-    enum Filter: String, CaseIterable {
-        case all = "全部"
-        case warn = "警告"
-        case error = "错误"
+    private enum Filter: String, CaseIterable {
+        case all = "全部", warn = "警告", error = "错误"
     }
 
     private var visible: [LogLine] {
-        var list = log.lines
-        switch filter {
-        case .all: break
-        case .warn: list = list.filter { $0.level == .warn }
-        case .error: list = list.filter { $0.level == .error }
+        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return log.lines.filter { line in
+            let matchesLevel = filter == .all || (filter == .warn && line.level == .warn)
+                || (filter == .error && line.level == .error)
+            return matchesLevel && (keyword.isEmpty
+                || line.message.localizedCaseInsensitiveContains(keyword)
+                || (line.detail ?? "").localizedCaseInsensitiveContains(keyword))
         }
-        let kw = searchText.trimmingCharacters(in: .whitespaces)
-        if !kw.isEmpty {
-            list = list.filter {
-                $0.message.localizedCaseInsensitiveContains(kw)
-                    || ($0.detail ?? "").localizedCaseInsensitiveContains(kw)
-            }
-        }
-        return list
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("过滤", selection: $filter) {
-                ForEach(Filter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            HStack {
+                Text("运行日志 (\(log.lines.count))")
+                    .font(.system(size: 16, weight: .bold)).foregroundStyle(colors.textPrimary)
+                Spacer()
+                Button(action: onBack) {
+                    Image(systemName: "xmark").font(.system(size: 18))
+                        .foregroundStyle(colors.textSecondary).frame(width: 44, height: 44)
+                }.accessibilityLabel("关闭")
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-
+            .padding(.leading, 20).padding(.trailing, 8).padding(.vertical, 8)
+            Divider().overlay(colors.border)
+            HStack(spacing: 8) {
+                ForEach(Filter.allCases, id: \.self) { item in
+                    Button { filter = item } label: {
+                        Text(item.rawValue).font(.system(size: 12))
+                            .foregroundStyle(filter == item ? colors.onAccent : colors.textSecondary)
+                            .padding(.horizontal, 12).frame(height: 32)
+                            .background(filter == item ? colors.accent : colors.surfaceVariant)
+                            .clipShape(Capsule())
+                    }.accessibilityAddTraits(filter == item ? .isSelected : [])
+                }
+                Spacer(minLength: 0)
+            }.padding(.horizontal, 14).padding(.top, 10)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(colors.textSecondary)
+                TextField("搜索日志内容", text: $searchText)
+                    .font(.system(size: 13)).foregroundStyle(colors.textPrimary)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(colors.textSecondary)
+                    }.accessibilityLabel("清除搜索")
+                }
+            }
+            .padding(10).background(colors.surfaceVariant).clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 14).padding(.vertical, 8)
             if visible.isEmpty {
-                Spacer()
-                Text("没有日志")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                Text(log.lines.isEmpty ? "暂无日志" : "暂无匹配日志")
+                    .font(.system(size: 14)).foregroundStyle(colors.textSecondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    List {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(visible) { line in
-                            row(line).id(line.id)
+                            Text(formatted(line)).font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(colors.textPrimary)
+                                .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                         }
-                    }
-                    .listStyle(.plain)
-                    .searchable(text: $searchText, prompt: "搜索日志内容")
-                    .onAppear {
-                        if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
-                }
+                    }.padding(.horizontal, 14).padding(.vertical, 8)
+                }.scrollDismissesKeyboard(.interactively)
             }
-
-            Divider()
-
-            VStack(spacing: 8) {
-                TextField("备注（可选，比如「105房开不了阀」）", text: $note)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack(spacing: 12) {
-                    Button {
-                        exportLog()
-                    } label: {
-                        Label("导出日志", systemImage: "square.and.arrow.up")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button(role: .destructive) {
-                        log.clear()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.bordered)
+            Divider().overlay(colors.border)
+            HStack(spacing: 12) {
+                Button { log.clear() } label: {
+                    Text("清空").font(.system(size: 14)).foregroundStyle(colors.accent)
+                        .frame(maxWidth: .infinity).frame(height: 44)
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(colors.border))
                 }
-            }
-            .padding(16)
-        }
-        .navigationTitle("运行日志（\(log.lines.count)）")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("关闭") { dismiss() }
+                Button { exportLog() } label: {
+                    Text("导出/分享").font(.system(size: 14)).frame(maxWidth: .infinity)
+                }.buttonStyle(AccentButtonStyle(colors: colors, radius: 12, height: 44))
+            }.padding(16)
+            if exportFailed {
+                Text("导出日志失败，请重试").font(.system(size: 12))
+                    .foregroundStyle(colors.warning).padding(.bottom, 12)
             }
         }
-        .sheet(isPresented: $showShare) {
-            if let url = exportURL {
-                ShareSheet(items: [url])
-            }
+        // 整屏不透明底（对照 Android `Surface(fillMaxSize, SolidSurface)`）
+        .background(colors.solidSurface.ignoresSafeArea())
+        .sheet(item: $export) { item in
+            ShareSheet(items: [item.url])
         }
     }
 
-    private func row(_ l: LogLine) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(l.level.rawValue)
-                    .font(.caption2.monospaced().bold())
-                    .foregroundStyle(levelColor(l.level))
-                Text(l.timeText)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                Text(l.message)
-                    .font(.caption)
-                    .lineLimit(3)
-            }
-            if let d = l.detail, !d.isEmpty {
-                Text(d)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(6)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func levelColor(_ l: LogLine.Level) -> Color {
-        switch l {
-        case .info: return .secondary
-        case .warn: return .orange
-        case .error: return .red
-        }
+    private func formatted(_ line: LogLine) -> String {
+        var text = "[\(line.timeText)] [\(line.level.rawValue)] \(line.message)"
+        if let detail = line.detail, !detail.isEmpty { text += "\n  " + detail }
+        return text
     }
 
     private func exportLog() {
-        guard let url = log.exportFile(note: note) else { return }
-        exportURL = url
-        showShare = true
+        guard let url = log.exportFile() else { exportFailed = true; return }
+        exportFailed = false
+        export = Export(url: url)
     }
 }

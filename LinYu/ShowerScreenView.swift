@@ -20,6 +20,7 @@ struct ShowerScreenView: View {
 
     @Environment(\.appColors) private var colors
     @Environment(\.isDarkMode) private var isDark
+    @ObservedObject private var backgrounds = BackgroundStore.shared
 
     private var timeText: String {
         let m = elapsedSec / 60
@@ -42,13 +43,20 @@ struct ShowerScreenView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            backgroundGradient.ignoresSafeArea()
+            // 对照 Android `ShowerScreen`：使用页套了自定义背景就**不画自身渐变**，
+            // 让底层（容器那层 AppBackground，scope = shower）的图片透出来。
+            // 否则自定义背景永远被这块渐变盖住，用户看到的还是默认蓝/深蓝。
+            if backgrounds.image(.shower) == nil {
+                backgroundGradient.ignoresSafeArea()
+            }
 
             ScrollView {
                 VStack(spacing: 0) {
                     // 72pt 图标（和 Android 的 `DeviceGlyph(emoji, 72.sp, 72.dp)` 同尺寸）
-                    PlainGlyph(emoji: emoji, size: 72, tint: .white)
-                        .padding(.bottom, 8)
+                    if backgrounds.image(.shower) == nil {
+                        PlainGlyph(emoji: emoji, size: 72, tint: .white)
+                            .padding(.bottom, 8)
+                    }
 
                     Text(statusText)
                         .font(.system(size: 22, weight: .bold))
@@ -155,6 +163,7 @@ struct ShowerScreenView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("返回（不结束用水）")
             .padding(.leading, 8)
             .padding(.top, 8)
         }

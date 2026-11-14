@@ -24,3 +24,8 @@ Pods/
 
 # 本地产物
 *.ipa
+
+# 本地辅助脚本（只是我本机的推送/清理工具，不属于项目代码）
+/del_file.py
+/push_all.py
+/push_file.py

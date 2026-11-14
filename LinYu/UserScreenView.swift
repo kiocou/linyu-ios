@@ -1,72 +1,5 @@
 import SwiftUI
 
-/// 「我的」页里可编辑的卡片类型（声明顺序即默认顺序）
-enum UserCardType: String, CaseIterable {
-    case account
-    case useCode
-    case notify
-    case trend
-    case background
-    case boundRoom
-    case update
-    case about
-    case log
-
-    var title: String {
-        switch self {
-        case .account: return "账号信息"
-        case .useCode: return "使用码"
-        case .notify: return "通知"
-        case .trend: return "消费趋势"
-        case .background: return "背景装扮"
-        case .boundRoom: return "绑定寝室"
-        case .update: return "软件更新"
-        case .about: return "关于项目"
-        case .log: return "运行日志"
-        }
-    }
-}
-
-/// 卡片分页策略 —— 逐条对照 Android 的 `UserCardLayoutPolicy`
-enum UserCardLayout {
-
-    /// 「我的」页默认三张
-    static let profileDefaults: [UserCardType] = [.account, .useCode, .boundRoom]
-    /// 「设置」页默认六张
-    static let settingsDefaults: [UserCardType] = [.notify, .trend, .background, .log, .about, .update]
-
-    static func restore(defaults: [UserCardType], saved: String) -> [UserCardType] {
-        guard !saved.isEmpty else { return defaults }
-        let allowed = Set(defaults)
-        var out = saved.split(separator: ",")
-            .compactMap { UserCardType(rawValue: $0.trimmingCharacters(in: .whitespaces)) }
-            .filter { allowed.contains($0) }
-        for d in defaults where !out.contains(d) { out.append(d) }
-        return out
-    }
-
-    static func save(_ list: [UserCardType], key: String) {
-        UserDefaults.standard.set(list.map(\.rawValue).joined(separator: ","), forKey: key)
-    }
-
-    static func saveHidden(_ set: Set<String>, key: String) {
-        UserDefaults.standard.set(set.joined(separator: ","), forKey: key)
-    }
-
-    static func loadHidden(_ key: String) -> Set<String> {
-        let raw = UserDefaults.standard.string(forKey: key) ?? ""
-        return Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
-    }
-
-    static func move<T>(_ list: [T], from: Int, to: Int) -> [T] {
-        guard from != to, list.indices.contains(from), list.indices.contains(to) else { return list }
-        var m = list
-        let item = m.remove(at: from)
-        m.insert(item, at: to)
-        return m
-    }
-}
-
 /// 「我的账号」页 —— 逐条对照 Android 的 `UserScreen.kt`。
 ///
 /// 和 Android 一样分两页：
@@ -77,6 +10,10 @@ enum UserCardLayout {
 struct UserScreenView: View {
     @EnvironmentObject private var session: Session
     @Environment(\.appColors) private var colors
+    @EnvironmentObject private var store: AppDataStore
+    @EnvironmentObject private var presentation: UserPresentation
+    /// 主题切换的圆形揭示
+    @EnvironmentObject private var reveal: ThemeReveal
 
     @ObservedObject var flow: ShowerFlow
     @ObservedObject var scanner: BLEScanner
@@ -86,21 +23,26 @@ struct UserScreenView: View {
     @AppStorage("linyu.darkMode") private var isDark = false
 
     @State private var showSettings = false
-    /// 退出登录确认（对照 Android `MainActivity.showLogoutConfirm`）
-    @State private var showLogoutConfirm = false
-    @State private var showLog = false
     @State private var editMode = false
+    /// 主题按钮在屏幕坐标里的位置（揭示动画的原点）
+    @State private var themeAnchor: CGRect = .zero
 
-    @State private var profileOrder: [UserCardType] = UserCardLayout.restore(
-        defaults: UserCardLayout.profileDefaults,
-        saved: UserDefaults.standard.string(forKey: "userProfileCardOrder") ?? ""
-    )
-    @State private var settingsOrder: [UserCardType] = UserCardLayout.restore(
-        defaults: UserCardLayout.settingsDefaults,
-        saved: UserDefaults.standard.string(forKey: "userSettingsCardOrder") ?? ""
-    )
+    @State private var profileOrder: [UserCardType]
+    @State private var settingsOrder: [UserCardType]
     @State private var profileHidden: Set<String> = UserCardLayout.loadHidden("userProfileHiddenCards")
     @State private var settingsHidden: Set<String> = UserCardLayout.loadHidden("userSettingsHiddenCards")
+
+    init(flow: ShowerFlow, scanner: BLEScanner, settingsVisible: Binding<Bool>) {
+        self.flow = flow
+        self.scanner = scanner
+        _settingsVisible = settingsVisible
+        let pages = UserCardLayout.restorePages(
+            profileSaved: UserDefaults.standard.string(forKey: "userProfileCardOrder") ?? "",
+            settingsSaved: UserDefaults.standard.string(forKey: "userSettingsCardOrder") ?? ""
+        )
+        _profileOrder = State(initialValue: pages.profile)
+        _settingsOrder = State(initialValue: pages.settings)
+    }
 
     private var versionText: String {
         let i = Bundle.main.infoDictionary
@@ -110,48 +52,29 @@ struct UserScreenView: View {
 
     var body: some View {
         ZStack {
-            colors.background.ignoresSafeArea()
-
+            // 整屏页面（背景装扮 / 运行日志）由 MainTabView 渲染 —— 它们必须盖住
+            // 底部导航和整个屏幕（对照 Android 的全屏 Dialog），放在这里会被页面范围限制。
             if showSettings {
                 settingsPage
             } else {
                 profilePage
             }
         }
-        .onAppear { settingsVisible = showSettings }
-        .onChange(of: showSettings) { v in settingsVisible = v }
-        .sheet(isPresented: $showLog) {
-            NavigationStack { LogView() }
-        }
-        .overlay {
-            if showLogoutConfirm {
-                // 逐条对照 Android `MainActivity.kt:256-283`：
-                //   canLogout = 没有进行中的订单（ShowerSafetyPolicy.canLogoutVoluntarily）
-                //   标题   能退出「确认退出」/ 不能退出「无法退出」
-                //   正文   能退出「确定退出登录？」/ 不能退出「设备使用中，无法退出」
-                //   确认键 能退出「退出」（error 色）/ 不能退出「返回」（primary 色）
-                //   取消键 只有能退出时才给「取消」
-                let canLogout = flow.activeOrder == nil
-                ConfirmDialogView(
-                    title: canLogout ? "确认退出" : "无法退出",
-                    message: canLogout ? "确定退出登录？" : "设备使用中，无法退出",
-                    confirmTitle: canLogout ? "退出" : "返回",
-                    destructive: canLogout,
-                    // 对照 Android：dismissButton 只有 canLogout 时才给
-                    cancelTitle: canLogout ? "取消" : nil,
-                    onConfirm: {
-                        showLogoutConfirm = false
-                        if canLogout {
-                            showSettings = false
-                            flow.reset()
-                            SavedCredential.clear()
-                            session.logout()
-                        }
-                    },
-                    onDismiss: { showLogoutConfirm = false }
-                )
+        .onAppear { settingsVisible = showSettings || presentation.page != nil }
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+        .onChange(of: showSettings) { v in settingsVisible = v || presentation.page != nil }
+        .onChange(of: presentation.page) { page in settingsVisible = showSettings || page != nil }
+        .onDisappear { settingsVisible = false }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 30).onEnded { value in
+                guard presentation.dialog == nil, value.startLocation.x < 24,
+                      value.translation.width > 80, abs(value.translation.height) < 50 else { return }
+                if presentation.page != nil { presentation.page = nil; return }
+                guard showSettings else { return }
+                showSettings = false
+                editMode = false
             }
-        }
+        )
     }
 
     // MARK: - 我的
@@ -202,19 +125,20 @@ struct UserScreenView: View {
                 // 对照 Android `UserScreen.kt:409`：点击只是把事件往上抛，
                 // 真正的确认弹窗在容器层（MainActivity）——iOS 这边同理放在本页 overlay
                 Button {
-                    showLogoutConfirm = true
+                    presentation.dialog = .logout
                 } label: {
                     Text("退出登录")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(colors.danger)
                         .frame(maxWidth: .infinity)
                         .frame(height: 46)
+                        .contentShape(Rectangle())
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(colors.danger.opacity(0.5), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
                 .padding(.top, 8)
 
                 Text(versionText)
@@ -241,7 +165,8 @@ struct UserScreenView: View {
                         .foregroundStyle(colors.textPrimary)
                         .frame(width: 40, height: 40)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityLabel("返回我的账号")
             }
 
             Text(showBack ? "设置" : "我的账号")
@@ -255,16 +180,27 @@ struct UserScreenView: View {
             }
             .font(.system(size: 14))
             .foregroundStyle(colors.accent)
+            .buttonStyle(InstantButtonStyle())
 
             if !showBack {
                 Button {
-                    isDark.toggle()
+                    toggleTheme()
                 } label: {
                     Text(isDark ? "🌙" : "☀️")
                         .font(.system(size: 20))
                         .frame(width: 40, height: 40)
+                        // 记录按钮在**屏幕坐标**里的位置：揭示动画要以它为中心扩散
+                        .background(
+                            GeometryReader { g in
+                                Color.clear.preference(
+                                    key: ThemeAnchorKey.self,
+                                    value: g.frame(in: .global)
+                                )
+                            }
+                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityLabel(isDark ? "切换浅色模式" : "切换深色模式")
 
                 Button {
                     showSettings = true
@@ -275,10 +211,32 @@ struct UserScreenView: View {
                         .foregroundStyle(colors.textSecondary)
                         .frame(width: 40, height: 40)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityLabel("打开设置")
             }
         }
+        .frame(height: PageLayout.titleHeight)
+        .frame(height: PageLayout.headerHeight, alignment: .top)
         .padding(.bottom, 16)
+        .onPreferenceChange(ThemeAnchorKey.self) { themeAnchor = $0 }
+    }
+
+    /// 切主题：有按钮位置就走圆形揭示，拿不到就退化成直接切（绝不因为动画失败而不切）
+    private func toggleTheme() {
+        let screen = UIScreen.main.bounds.size
+        guard themeAnchor != .zero else {
+            isDark.toggle()
+            return
+        }
+        let origin = CGPoint(x: themeAnchor.midX, y: themeAnchor.midY)
+        // ⚠️ coverColor 必须是**切换前**的底色：遮罩填的就是它
+        reveal.toggle(
+            origin: origin,
+            coverColor: colors.background,
+            screen: screen
+        ) {
+            isDark.toggle()
+        }
     }
 
     // MARK: - 卡片列表
@@ -311,12 +269,13 @@ struct UserScreenView: View {
                         editIcon(toOtherIcon, toOtherHint, colors.accent) {
                             onMoveToOther(type)
                         }
-                        editIcon("chevron.up", "上移", index > 0 ? colors.accent : colors.textSecondary.opacity(0.3)) {
+                        editIcon("chevron.up", "上移", index > 0 ? colors.accent : colors.textSecondary.opacity(0.3), enabled: index > 0) {
                             order.wrappedValue = UserCardLayout.move(order.wrappedValue, from: index, to: index - 1)
                             UserCardLayout.save(order.wrappedValue, key: orderKey)
                         }
                         editIcon("chevron.down", "下移",
-                                 index < visible.count - 1 ? colors.accent : colors.textSecondary.opacity(0.3)) {
+                                 index < visible.count - 1 ? colors.accent : colors.textSecondary.opacity(0.3),
+                                 enabled: index < visible.count - 1) {
                             order.wrappedValue = UserCardLayout.move(order.wrappedValue, from: index, to: index + 1)
                             UserCardLayout.save(order.wrappedValue, key: orderKey)
                         }
@@ -345,6 +304,7 @@ struct UserScreenView: View {
         _ symbol: String,
         _ hint: String,
         _ color: Color,
+        enabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -354,8 +314,9 @@ struct UserScreenView: View {
                 .frame(width: 34, height: 34)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(InstantButtonStyle())
         .accessibilityLabel(hint)
+        .disabled(!enabled)
     }
 
     @ViewBuilder
@@ -366,18 +327,19 @@ struct UserScreenView: View {
         case .notify: NotifyCardView()
         case .trend: TrendToggleCardView()
         case .background: BackgroundCardView()
-        case .boundRoom: BoundRoomCardView(scanner: scanner)
-        case .update: UpdateCardView()
+        case .boundRoom: BoundRoomCardView(scanner: scanner, store: store)
+        case .update: SoftwareUpdateCard()
         case .about: AboutCardView()
-        case .log: LogCardView { showLog = true }
+        case .log: LogCardView { presentation.page = .log }
         }
     }
 
     // MARK: - 跨页移动
 
     private func moveToSettings(_ type: UserCardType) {
-        profileOrder = profileOrder.filter { $0 != type }
-        if !settingsOrder.contains(type) { settingsOrder.append(type) }
+        let pages = UserCardLayout.moveToSettings(type, profile: profileOrder, settings: settingsOrder)
+        profileOrder = pages.profile
+        settingsOrder = pages.settings
         profileHidden.remove(type.rawValue)
         settingsHidden.remove(type.rawValue)
         UserCardLayout.save(profileOrder, key: "userProfileCardOrder")
@@ -387,8 +349,9 @@ struct UserScreenView: View {
     }
 
     private func moveToProfile(_ type: UserCardType) {
-        settingsOrder = settingsOrder.filter { $0 != type }
-        if !profileOrder.contains(type) { profileOrder.append(type) }
+        let pages = UserCardLayout.moveToProfile(type, profile: profileOrder, settings: settingsOrder)
+        profileOrder = pages.profile
+        settingsOrder = pages.settings
         profileHidden.remove(type.rawValue)
         settingsHidden.remove(type.rawValue)
         UserCardLayout.save(profileOrder, key: "userProfileCardOrder")

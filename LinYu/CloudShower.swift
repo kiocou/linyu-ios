@@ -24,27 +24,45 @@ enum CloudShower {
         case inUseByOthers
         /// 服务端说设备不在线（306）→ 上层问用户要不要改用蓝牙
         case deviceOffline
+        /// 服务端**明确拒绝**（success=false 且不是 306）。
+        /// 只有这一类才可能和「欠费」有关，上层据此决定弹窗里要不要给「立即补扣」。
+        case rejected(String)
+        /// 本地/网络层面的失败（参数不全、请求发不出去、确认超时……）
         case failed(String)
     }
 
     /// 开阀。`budgetMs` 是轮询确认的总预算（Android 也是 6 秒）。
-    static func open(snCode: String, budgetMs: Int = 6_000) async -> OpenOutcome {
+    static func open(snCode: String, budgetMs: Int = 6_000, allowNewOrder: Bool = true, expectedOrderNo: String? = nil) async -> OpenOutcome {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
         guard !snCode.isEmpty else { return .failed("设备信息不完整") }
         let deadline = Date().addingTimeInterval(Double(budgetMs) / 1000.0)
 
         // ① 设备上已有订单 → 直接恢复，不再下发
         if let using = try? await queryUsing(snCode: snCode) {
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
             if using.errorCode == 307 || (using.success && using.data?.orderNo != nil) {
                 // ⚠️ 有订单 ≠ 是你的订单，先看 isOwner
                 if using.data?.isOwner == false {
                     return .inUseByOthers
                 }
                 let orderNo = using.data?.orderNo ?? ""
+                guard !ActiveOrderStore.wasFinished(snCode: snCode, orderNo: orderNo) else {
+                    return .failed("设备已关闭，请稍后重试")
+                }
+                if let expectedOrderNo, !expectedOrderNo.isEmpty, expectedOrderNo != orderNo {
+                    return .failed("订单状态已变化，请刷新")
+                }
                 let pre = using.data?.preDeductMoney?.value
                 AppLog.shared.i("设备 \(snCode) 已有进行中订单 \(orderNo)，恢复")
                 return .resumed(orderNo: orderNo, preDeduct: pre)
             }
+            if using.success { ActiveOrderStore.confirmIdle(snCode) }
         }
+
+        // 恢复/通知不是开新阀的授权：查询失败或已无订单时不能申请费率。
+        guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
+        guard allowNewOrder else { return .failed("未能确认原订单仍在使用，请刷新设备状态") }
 
         // ② 下发开阀
         let rateResp: APIResponse<DownRateData>
@@ -54,9 +72,12 @@ enum CloudShower {
                 form: ["xfModel": "0", "snCode": snCode],
                 tag: "downRate"
             )
-            rateResp = try ApiClient.decode(DownRateData.self, from: data, path: "downRate")
+            // ⚠️ 必须 decodeShell：业务失败（尤其是 306「设备不在线」）要能看得到 errorCode，
+            // 而 `decode` 会把它变成异常，下面的 306 分支就永远走不到——
+            // 结果就是「蓝牙表只能蓝牙开」这件事在 iOS 上无从触发。
+            rateResp = try ApiClient.decodeShell(DownRateData.self, from: data, path: "downRate")
         } catch {
-            return .failed("开阀请求失败：\(error.localizedDescription)")
+            return .failed("开阀请求失败：\(LoginFeedback.message(error))")
         }
 
         guard rateResp.success else {
@@ -64,7 +85,7 @@ enum CloudShower {
             if rateResp.errorCode == 306 {
                 return .deviceOffline
             }
-            return .failed(rateResp.displayMessage ?? "开始失败")
+            return .rejected(rateResp.displayMessage ?? "开始失败")
         }
 
         // ③ 轮询确认（9 次 × 700ms）
@@ -80,8 +101,10 @@ enum CloudShower {
                 break
             }
             try? await Task.sleep(nanoseconds: 700_000_000)
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
 
             guard let r = try? await downRateResult(snCode: snCode) else { continue }
+            guard SessionWork.isCurrent(generation) else { return .failed("登录状态已变化") }
             if r.success, let d = r.data, d.looksOpened {
                 opened = true
                 if let no = d.orderNo, !no.isEmpty { confirmedOrderNo = no }
@@ -91,7 +114,7 @@ enum CloudShower {
         }
 
         guard opened else {
-            return .failed("没能确认设备已开启。如果水已经出了，请先在账单里确认，不要重复点。")
+            return .failed("开启结果未确认，请检查是否出水，勿重复开启")
         }
 
         AppLog.shared.i("云端开阀成功 orderNo=\(confirmedOrderNo) autoDisCon=\(autoDisCon)s")
@@ -113,6 +136,8 @@ enum CloudShower {
     }
 
     static func close(snCode: String, orderNo: String) async -> CloseOutcome {
+        let generation = SessionWork.generation ?? Session.shared.requestGeneration
+        guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
         guard !snCode.isEmpty else { return .failed("设备信息不完整") }
 
         // orderNo 必须**在关阀之前**敲定：关阀成功后订单就没了，queryUsing 再也问不出来
@@ -122,20 +147,22 @@ enum CloudShower {
         }
 
         let resp: APIResponse<EmptyData>
+        guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
         do {
             let data = try await ApiClient.post(
                 "/order/tcpDevice/closeOrder",
                 form: ["snCode": snCode, "orderNo": no],
                 tag: "closeOrder"
             )
-            resp = try ApiClient.decode(EmptyData.self, from: data, path: "closeOrder")
+            resp = try ApiClient.decodeShell(EmptyData.self, from: data, path: "closeOrder")
         } catch {
             // 请求本身失败 → 没有任何证据。再问一次服务端还开着没有
+            guard SessionWork.isCurrent(generation) else { return .unconfirmed("登录状态已变化") }
             let running = await orderRunning(snCode: snCode)
             if running == true {
-                return .unconfirmed("关阀请求没发出去，设备可能还在用水")
+                return .unconfirmed("关闭结果未确认，设备可能仍在出水")
             }
-            return .unconfirmed("关阀请求没发出去：\(error.localizedDescription)")
+            return .unconfirmed("关闭结果未确认，设备可能仍在出水")
         }
 
         if !resp.success {
@@ -147,65 +174,17 @@ enum CloudShower {
             return .failed(resp.displayMessage ?? "关闭失败，请重试")
         }
 
-        // ⚠️ 这里**不再轮询等待**：closeOrder 已被受理，订单一定会关掉。
-        // Android 注释里专门纠正过这一点——再等 5 轮只会让用户白等最多 5 秒，
-        // 而 iOS 的界面退出就在 close 返回之后，等待会直接变成可感知的卡顿。
-        let running = await orderRunning(snCode: snCode)
-        if running != false {
-            AppLog.shared.w("关阀已受理，但服务端仍显示订单（running=\(String(describing: running))）")
-        }
+        // Android closeValve 同样以 closeOrder 受理为关闭判据。
+        // 不把仅供日志的额外查询放在返回前；金额由结算查询负责，结束身份负责过滤延迟状态。
+        AppLog.shared.i("关阀已受理：\(snCode)")
         return .closed
     }
 
     // MARK: - 结算
 
-    /// 查本次消费金额。
-    ///
-    /// 三条路按顺序试，和 Android 的 `SettlementEngine` 同思路但收窄了轮询次数：
-    /// 1. `consumeOrder/result/query` 快速探测（3 轮 × 1.2s）
-    /// 2. 拿到过明确的 0 就再确认 2 轮（服务端结算慢时，0 和「还没算完」长得一样）
-    /// 3. 回退到当月账单列表，按 orderNo 匹配
-    ///
-    /// 返回 nil = **还不知道**（不是没花钱）
-    static func settle(orderNo: String, snCode: String) async -> Double? {
-        var sawDefiniteZero = false
-
-        if !orderNo.isEmpty {
-            for attempt in 0 ..< 3 {
-                if let v = await consumeResult(orderNo: orderNo, snCode: snCode) {
-                    if v > 0 {
-                        AppLog.shared.i("结算命中（第 \(attempt + 1) 轮）：¥\(MoneyFormat.format(v))")
-                        return v
-                    }
-                    sawDefiniteZero = true
-                    break
-                }
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-            }
-
-            if sawDefiniteZero {
-                for attempt in 0 ..< 2 {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    if let v = await consumeResult(orderNo: orderNo, snCode: snCode), v > 0 {
-                        AppLog.shared.i("结算命中（零确认第 \(attempt + 1) 轮）：¥\(MoneyFormat.format(v))")
-                        return v
-                    }
-                }
-            }
-        }
-
-        // 回退：账单列表里按 orderNo 匹配
-        if let bill = await BillService.findBill(orderNo: orderNo, snCode: snCode) {
-            if let y = bill.yuan {
-                AppLog.shared.i("结算回退账单列表命中：¥\(MoneyFormat.format(y))")
-                return y
-            }
-        }
-
-        // 走到这里：直答接口说 0 或不知道，账单列表也没匹配上。
-        // 如果见过明确的 0，那就是真零消费；否则是「还不知道」。
-        return sawDefiniteZero ? 0.0 : nil
-    }
+    // 结算逻辑已抽到 `SettlementEngine`（对照 Android 的 `data/SettlementEngine.kt`）：
+    // 三态探询 + 零确认 + 账单列表回退 + 待对账登记全在那里。
+    // 这里不再重复实现一份，否则两边判据一改就会不一致。
 
     // MARK: - 单接口封装
 
@@ -215,7 +194,9 @@ enum CloudShower {
             form: ["xfModel": "0", "snCode": snCode],
             tag: "queryUsing"
         )
-        return try ApiClient.decode(UsingOrderData.self, from: data, path: "queryUsing")
+        // ⚠️ decodeShell：307（已有订单）是**正常语义**，走 decode 就被吞成 nil，
+        // 于是「恢复已有订单」永远不生效，只能重复下发开阀。
+        return try ApiClient.decodeShell(UsingOrderData.self, from: data, path: "queryUsing")
     }
 
     static func downRateResult(snCode: String) async throws -> APIResponse<DownRateResultData> {
@@ -224,23 +205,31 @@ enum CloudShower {
             form: ["snCode": snCode],
             tag: "downRateResult"
         )
-        return try ApiClient.decode(DownRateResultData.self, from: data, path: "downRateResult")
+        return try ApiClient.decodeShell(DownRateResultData.self, from: data, path: "downRateResult")
     }
 
-    static func consumeResult(orderNo: String, snCode: String) async -> Double? {
-        guard !orderNo.isEmpty else { return nil }
-        do {
-            let data = try await ApiClient.post(
-                "/order/consumeOrder/result/query",
-                form: ["snCode": snCode, "orderNo": orderNo],
-                tag: "consumeResult"
-            )
-            let resp = try ApiClient.decode(ConsumeResultData.self, from: data, path: "consumeResult")
-            guard resp.success, let v = resp.data?.yuan, v.isFinite, v >= 0 else { return nil }
-            return v
-        } catch {
-            return nil
+    /// 拿这次用水**真正的** orderNo：本地存了就用本地的，没存就问服务端并回填。
+    ///
+    /// ⚠️ **必须在关阀之前调**：关阀成功后订单就没了，`queryUsing` 再也问不出来。
+    /// 所有需要 orderNo 的接口（结算、关阀）都靠它，拿不到就只能退化成按时间窗猜账单。
+    static func resolveOrderNo(snCode: String) async -> String {
+        let cached = ActiveOrderStore.find(snCode)?.orderNo ?? ""
+        if !cached.isEmpty { return cached }
+        let fresh = await queryOrderNo(snCode: snCode)
+        if !fresh.isEmpty {
+            ActiveOrderStore.updateOrderNo(snCode: snCode, orderNo: fresh)
+            AppLog.shared.i("orderNo 本地缺失，已从服务端回填：\(fresh)")
         }
+        return fresh
+    }
+
+    /// 查询设备上进行中订单的订单号，没有则返回空串
+    static func queryOrderNo(snCode: String) async -> String {
+        guard let p = try? await queryUsing(snCode: snCode) else { return "" }
+        if p.errorCode == 307 || (p.success && p.data?.orderNo != nil) {
+            return p.data?.orderNo ?? ""
+        }
+        return ""
     }
 
     static func orderRunning(snCode: String) async -> Bool? {

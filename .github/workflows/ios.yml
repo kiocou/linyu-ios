@@ -1,6 +1,6 @@
 name: Build iOS
 
-# 空壳验证用：手动触发，以及推 main 时自动跑
+# 回归检查、Archive 和小组件打包；main 推送或手动触发，不自动创建发行
 on:
   workflow_dispatch:
   push:
@@ -24,6 +24,46 @@ jobs:
       - name: 安装 XcodeGen
         run: brew install xcodegen
 
+      - name: 账单缓存与结算对账回归检查
+        run: |
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/ApiModels.swift LinYu/BillService.swift LinYu/AppDataStore.swift \
+            LinYu/PendingSettlement.swift LinYu/SettlementEngine.swift \
+            LinYu/ActiveOrderStore.swift LinYu/MoneyFormat.swift \
+            LinYu/PreDeductPolicy.swift Tests/MoneyDisplayRegression.swift \
+            LinYu/ProfileCache.swift LinYu/DeviceStateParser.swift LinYu/LoginFeedback.swift Tests/ParityBatchRegression.swift \
+            LinYu/BleRequestFields.swift \
+            LinYu/DeviceAddress.swift Tests/DeviceAddressRegression.swift \
+            LinYu/SessionWork.swift LinYu/RecoveryArchive.swift LinYu/DeductService.swift Tests/SessionIsolationRegression.swift \
+            LinYu/BillHistoryCache.swift LinYu/BleRecoveryStore.swift LinYu/SettlementNoticePolicy.swift \
+            LinYu/LogRedactor.swift Tests/ParityFinishRegression.swift \
+            Tests/SharedStoreSessionRegression.swift \
+            LinYu/UserCardLayout.swift Tests/UserCardLayoutRegression.swift \
+            LinYu/BleCallbackGuard.swift Tests/BleCallbackRegression.swift \
+            LinYu/BleReplyBuffer.swift Tests/BleReplyBufferRegression.swift \
+            LinYu/BleSettlementCleanup.swift Tests/BleSettlementRegression.swift \
+            LinYu/NotificationPolicy.swift Tests/NotificationFeedbackRegression.swift \
+            LinYu/UseCodeQuotaStore.swift \
+            LinYu/DeviceControlPolicy.swift LinYu/CloudShower.swift Tests/DeviceControlRegression.swift \
+            Tests/DataStoreSupport.swift Tests/DataStoreRegression.swift \
+            Tests/SettlementRegression.swift Tests/CoreLogicRegression.swift \
+            -o "$RUNNER_TEMP/linyu-data-tests"
+          "$RUNNER_TEMP/linyu-data-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/ApiModels.swift LinYu/ApiClient.swift LinYu/LoginFeedback.swift LinYu/SessionWork.swift Tests/NetworkRegression.swift \
+            -o "$RUNNER_TEMP/linyu-network-tests"
+          "$RUNNER_TEMP/linyu-network-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/ApiModels.swift LinYu/LoginFeedback.swift LinYu/DeviceInfoDisplay.swift Tests/DeviceDisplayRegression.swift \
+            -o "$RUNNER_TEMP/linyu-display-tests"
+          "$RUNNER_TEMP/linyu-display-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            WidgetShared/WidgetSnapshot.swift WidgetShared/ConsumptionCachePolicy.swift LinYu/ColorContrastPolicy.swift Tests/WidgetRegression.swift \
+            -o "$RUNNER_TEMP/linyu-widget-tests"
+          "$RUNNER_TEMP/linyu-widget-tests"
+          swiftc -swift-version 5 -parse-as-library LinYu/UserReleaseNotes.swift Tests/ReleaseNotesRegression.swift -o "$RUNNER_TEMP/linyu-release-tests"
+          "$RUNNER_TEMP/linyu-release-tests"
+
       - name: 生成 Xcode 工程
         run: xcodegen generate
 
@@ -37,9 +77,38 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath build/LinYu.xcarchive \
             CODE_SIGN_IDENTITY="" \
+            LINYU_SOURCE_REVISION="$GITHUB_SHA" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_BITCODE=NO
+          test -s build/LinYu.xcarchive/Products/Applications/LinYu.app/APP_CHANGELOG.md
+
+      - name: 组件离线布局截图
+        run: |
+          set -euo pipefail
+          xcodebuild build -project LinYu.xcodeproj -scheme LinYu -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO > build/simulator-build.log 2>&1 || { rg -n -C 4 'error:' build/simulator-build.log || true; tail -100 build/simulator-build.log; exit 1; }
+          SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          xcrun simctl boot "$SIM" || true
+          xcrun simctl bootstatus "$SIM" -b
+          xcrun simctl install "$SIM" build/Simulator/Build/Products/Debug-iphonesimulator/LinYu.app
+          mkdir -p build/widget-previews
+          for MODE in idle running nearby bills; do
+            xcrun simctl terminate "$SIM" com.hualala.linyu || true
+            xcrun simctl launch "$SIM" com.hualala.linyu --widget-preview "--preview-$MODE"
+            sleep 3
+            xcrun simctl io "$SIM" screenshot "build/widget-previews/$MODE.png"
+          done
+
+      - name: 上传组件布局截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinYu-widget-previews
+          path: |
+            build/widget-previews
+            build/simulator-build.log
 
       - name: 校验产物并打包成 ipa
         run: |
@@ -51,8 +120,32 @@ jobs:
             exit 1
           fi
           echo "产物大小：$(du -sh "$APP" | cut -f1)"
+          EXT="$APP/PlugIns/LinYuWidgets.appex"
+          test -f "$EXT/LinYuWidgets"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")" = "com.apple.widgetkit-extension"
+          for KEY in CFBundleVersion CFBundleShortVersionString; do
+            test "$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$EXT/Info.plist")" = "$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$APP/Info.plist")"
+          done
 
-          # 未签名 ipa 的标准结构就是 Payload/<App>.app
+          # Archive 关闭了签名：仅生成 entitlements 文件并不会把共享组写进二进制。
+          # 给 SideStore 保留可读取的权限声明，安装时仍须用户账号重新签名。
+          # 先签扩展，再签宿主；这不是可直接安装的开发者证书签名。
+          codesign --force --sign - --timestamp=none --entitlements WidgetExtension/LinYuWidgets.entitlements "$EXT"
+          codesign --force --sign - --timestamp=none --entitlements LinYu/LinYu.entitlements "$APP"
+          codesign --verify --strict "$EXT"
+          codesign --verify --strict "$APP"
+          codesign --display --entitlements - --xml "$EXT" > build/widget-entitlements.plist
+          codesign --display --entitlements - --xml "$APP" > build/app-entitlements.plist
+          python3 - <<'PY'
+          import plistlib
+          expected = ["group.com.hualala.linyu"]
+          for path in ["build/widget-entitlements.plist", "build/app-entitlements.plist"]:
+              with open(path, "rb") as source:
+                  actual = plistlib.load(source).get("com.apple.security.application-groups")
+              assert actual == expected, f"Shared group missing in {path}"
+          PY
+
+          # 保留原产物文件名；它仍需要 SideStore 重签后安装。
           rm -rf build/Payload build/LinYu-unsigned.ipa
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/
@@ -60,7 +153,7 @@ jobs:
           zip -qry LinYu-unsigned.ipa Payload
 
           echo "ipa 大小：$(du -sh LinYu-unsigned.ipa | cut -f1)"
-          unzip -l LinYu-unsigned.ipa | head -20
+          unzip -l LinYu-unsigned.ipa | sed -n '1,20p'
 
       - name: 上传 ipa
         uses: actions/upload-artifact@v4

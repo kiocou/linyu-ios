@@ -11,7 +11,7 @@ struct AppColorSet {
     let card: Color
     let solidSurface: Color
     let primary: Color
-    let accent: Color
+    var accent: Color
     let textPrimary: Color
     let textSecondary: Color
     let success: Color
@@ -63,8 +63,7 @@ struct AppColorSet {
     /// Android 注释里踩过：滑块颜色可能来自自定义背景提取，写死深蓝/白都可能糊成一片。
     var onAccent: Color {
         let (r, g, b) = accent.rgb
-        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-        return luminance > 0.5 ? Color(hex: 0x0F172A) : .white
+        return ColorContrastPolicy.usesDarkForeground(red: r, green: g, blue: b) ? Color(hex: 0x0F172A) : .white
     }
 }
 

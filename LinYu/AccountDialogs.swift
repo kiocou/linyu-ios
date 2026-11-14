@@ -14,6 +14,7 @@ struct ChangePasswordDialog: View {
     @Environment(\.appColors) private var colors
     let currentPhone: String
     let onDismiss: () -> Void
+    var onSuccess: () -> Void = {}
 
     /// false = 知道当前密码；true = 走短信验证码
     @State private var smsMode = false
@@ -21,47 +22,35 @@ struct ChangePasswordDialog: View {
     @State private var newPwd = ""
     @State private var confirmPwd = ""
     @State private var code = ""
-    /// 预填当前绑定的手机号，但**允许改**（照搬 Android 注释）
+    /// 与 Android 一致：预填当前手机号，允许修正后发送验证码。
     @State private var phone: String
     @State private var sending = false
     @State private var countdown = 0
     @State private var submitting = false
     @State private var errorText: String?
 
-    init(currentPhone: String, onDismiss: @escaping () -> Void) {
+    init(currentPhone: String, onSuccess: @escaping () -> Void = {}, onDismiss: @escaping () -> Void) {
         self.currentPhone = currentPhone
+        self.onSuccess = onSuccess
         self.onDismiss = onDismiss
         _phone = State(initialValue: currentPhone)
     }
 
     private var canSubmit: Bool {
         if smsMode {
-            return phone.count == 11 && code.count >= 4 && newPwd.count >= 6 && newPwd == confirmPwd
+            return !code.isEmpty && !newPwd.isEmpty && !confirmPwd.isEmpty
         }
-        return oldPwd.count >= 6 && newPwd.count >= 6 && newPwd == confirmPwd
+        return !oldPwd.isEmpty && !newPwd.isEmpty && !confirmPwd.isEmpty
     }
 
     var body: some View {
         DialogScrim(onTapOutside: { if !submitting { onDismiss() } }) {
             AlertCard(title: "修改密码", titleAlign: .leading) {
                 VStack(alignment: .leading, spacing: 10) {
-                    // 模式切换
-                    Button {
-                        smsMode.toggle()
-                        errorText = nil
-                    } label: {
-                        Text(smsMode ? "使用当前密码修改" : "使用验证码修改")
-                            .font(.system(size: 13))
-                            .foregroundStyle(colors.accent)
-                    }
-                    .buttonStyle(.plain)
-
                     if smsMode {
-                        Text("当前手机号：\(currentPhone)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(colors.textSecondary)
-
-                        dialogField("手机号", text: $phone, keyboard: .numberPad)
+                        dialogField("手机号", text: Binding(get: { phone }, set: {
+                            phone = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }), keyboard: .numberPad)
 
                         HStack(spacing: 10) {
                             dialogField("验证码", text: $code, keyboard: .numberPad)
@@ -76,7 +65,7 @@ struct ChangePasswordDialog: View {
                                     .background(canSendCode ? colors.accent : colors.accent.opacity(0.45))
                                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(InstantButtonStyle())
                             .disabled(!canSendCode)
                         }
                     } else {
@@ -85,6 +74,17 @@ struct ChangePasswordDialog: View {
 
                     dialogField("新密码", text: $newPwd, keyboard: .default, secured: true)
                     dialogField("确认新密码", text: $confirmPwd, keyboard: .default, secured: true)
+
+                    Button {
+                        smsMode.toggle()
+                        errorText = nil
+                    } label: {
+                        Text(smsMode ? "直接修改密码" : "短信验证修改密码")
+                            .font(.system(size: 12))
+                            .foregroundStyle(colors.accent)
+                    }
+                    .buttonStyle(InstantButtonStyle())
+                    .disabled(submitting)
 
                     if newPwd != confirmPwd, !confirmPwd.isEmpty {
                         Text("两次输入的新密码不一致")
@@ -98,6 +98,7 @@ struct ChangePasswordDialog: View {
                             .foregroundStyle(colors.danger)
                     }
                 }
+                .disabled(submitting)
             } actions: {
                 DialogTextButton(title: "取消", color: colors.accent) {
                     if !submitting { onDismiss() }
@@ -111,6 +112,7 @@ struct ChangePasswordDialog: View {
                 .disabled(!canSubmit || submitting)
             }
         }
+        .interactiveDismissDisabled(submitting)
     }
 
     private var canSendCode: Bool { !sending && countdown == 0 && phone.count == 11 }
@@ -128,25 +130,28 @@ struct ChangePasswordDialog: View {
                 countdown -= 1
             }
         } catch {
-            errorText = error.localizedDescription
+            errorText = LoginFeedback.message(error)
         }
     }
 
     private func submit() async {
+        guard canSubmit, !submitting else { return }
+        guard newPwd == confirmPwd else { errorText = "两次输入的新密码不一致"; return }
         submitting = true
         errorText = nil
         defer { submitting = false }
         do {
             // 密码用和登录同一套加密：MD5 取后 10 位大写
             let enc = AuthService.encryptPassword(newPwd)
+            let raw: Data
             if smsMode {
-                _ = try await ApiClient.post(
+                raw = try await ApiClient.post(
                     "/user/password/forget",
                     form: ["password": enc, "code": code],
                     tag: "forgetPassword"
                 )
             } else {
-                _ = try await ApiClient.post(
+                raw = try await ApiClient.post(
                     "/user/password/update",
                     form: [
                         "oldPassword": AuthService.encryptPassword(oldPwd),
@@ -155,11 +160,12 @@ struct ChangePasswordDialog: View {
                     tag: "updatePassword"
                 )
             }
-            // 改完密码服务端会踢掉旧登录态，本地凭据也就没意义了
-            SavedCredential.clear()
+            _ = try ApiClient.decode(EmptyData.self, from: raw, path: "changePassword")
+            SavedCredential.save(phone: currentPhone, password: newPwd)
+            onSuccess()
             onDismiss()
         } catch {
-            errorText = "修改失败：\(error.localizedDescription)"
+            errorText = LoginFeedback.message(error)
         }
     }
 
@@ -197,6 +203,7 @@ struct ChangePhoneDialog: View {
     @Environment(\.appColors) private var colors
     let currentPhone: String
     let onDismiss: () -> Void
+    var onSuccess: () -> Void = {}
 
     @State private var newPhone = ""
     @State private var code = ""
@@ -235,7 +242,7 @@ struct ChangePhoneDialog: View {
                                 .background(canSend ? colors.accent : colors.accent.opacity(0.45))
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(InstantButtonStyle())
                         .disabled(!canSend)
                     }
 
@@ -245,6 +252,7 @@ struct ChangePhoneDialog: View {
                             .foregroundStyle(colors.danger)
                     }
                 }
+                .disabled(submitting)
             } actions: {
                 DialogTextButton(title: "取消", color: colors.accent) {
                     if !submitting { onDismiss() }
@@ -258,6 +266,7 @@ struct ChangePhoneDialog: View {
                 .disabled(!canSubmit)
             }
         }
+        .interactiveDismissDisabled(submitting)
     }
 
     private var canSend: Bool { !sending && countdown == 0 && newPhone.count == 11 }
@@ -275,25 +284,29 @@ struct ChangePhoneDialog: View {
                 countdown -= 1
             }
         } catch {
-            errorText = error.localizedDescription
+            errorText = LoginFeedback.message(error)
         }
     }
 
     private func submit() async {
+        guard canSubmit, !submitting else { return }
         submitting = true
         errorText = nil
         defer { submitting = false }
         do {
-            _ = try await ApiClient.post(
+            let raw = try await ApiClient.post(
                 "/user/phone/update",
                 form: ["newTelephone": newPhone, "code": code],
                 tag: "updatePhone"
             )
+            _ = try ApiClient.decode(EmptyData.self, from: raw, path: "updatePhone")
+            SavedCredential.clear()
             // 认证参数里的 telephone 也得跟着换，否则后续请求还在用旧号
             Session.shared.updateTelephone(newPhone)
+            onSuccess()
             onDismiss()
         } catch {
-            errorText = "更换失败：\(error.localizedDescription)"
+            errorText = LoginFeedback.message(error)
         }
     }
 

@@ -16,11 +16,19 @@ struct DialogScrim<Content: View>: View {
             Color.black.opacity(0.38)
                 .ignoresSafeArea()
                 .onTapGesture { onTapOutside?() }
-                .allowsHitTesting(onTapOutside != nil)
+                // 不允许点外部关闭的弹窗也必须挡住底层按钮。
+                .allowsHitTesting(true)
 
             content
                 .padding(.horizontal, 28)
         }
+        // ⚠️ 关键：容器本身也要铺满整个窗口。
+        // 只给里面的 Color 加 ignoresSafeArea 不够 —— ZStack 仍会被父视图
+        // 按安全区布局，遮罩就只在中间一块（真机反馈：四周露出没压暗的区域）。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        // 不允许点外部关闭的弹窗也必须拦住底层点击
+        .contentShape(Rectangle())
     }
 }
 
@@ -33,6 +41,11 @@ struct AlertCard<Content: View, Actions: View>: View {
     var titleAlign: TextAlignment = .center
     /// 标题下面那行小字（如位置）
     var subtitle: String? = nil
+    var cornerRadius: CGFloat = 28
+    var contentSpacing: CGFloat = 16
+    var actionSpacing: CGFloat = 20
+    var cardPadding: CGFloat = 24
+    var maxWidth: CGFloat = 340
     @ViewBuilder let content: Content
     @ViewBuilder let actions: Actions
 
@@ -59,18 +72,18 @@ struct AlertCard<Content: View, Actions: View>: View {
             .frame(maxWidth: .infinity, alignment: titleAlign == .center ? .center : .leading)
 
             content
-                .padding(.top, 16)
+                .padding(.top, contentSpacing)
 
             HStack(spacing: 4) {
                 Spacer(minLength: 0)
                 actions
             }
-            .padding(.top, 20)
+            .padding(.top, actionSpacing)
         }
-        .padding(24)
-        .frame(maxWidth: 340)
+        .padding(cardPadding)
+        .frame(maxWidth: maxWidth)
         .background(colors.solidSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 24, y: 10)
     }
 }
@@ -177,7 +190,7 @@ struct DeviceDetailDialogView: View {
                     DetailRowView(label: "预扣金额", value: MoneyFormat.withSymbol(device.withholdYuan))
                     DetailRowView(label: "状态", value: isActive ? "使用中" : "空闲")
                     if device.needsBluetoothControl {
-                        Text("此设备通过手机蓝牙直连控制：开启后请留在设备旁，走远会断开连接、无法关闭。")
+                        Text("使用期间请保持蓝牙开启并留在设备附近，以便结束用水。")
                             .font(.system(size: 13))
                             .foregroundStyle(colors.textSecondary)
                             .lineSpacing(4)
@@ -211,10 +224,11 @@ struct OpeningDialogView: View {
     @Environment(\.appColors) private var colors
     /// 具体进度文案。蓝牙表那条要好几步，不给进度用户会以为卡死
     let progress: String
+    var title: String = "正在开启热水器..."
 
     var body: some View {
         DialogScrim(onTapOutside: nil) {
-            AlertCard(title: "正在开启热水器...", titleAlign: .center) {
+            AlertCard(title: title, titleAlign: .center) {
                 HStack(spacing: 12) {
                     ProgressView()
                         .tint(colors.accent)
@@ -235,18 +249,79 @@ struct OpeningDialogView: View {
 struct ShowerErrorDialogView: View {
     @Environment(\.appColors) private var colors
     let message: String
+    /// 服务端**明确拒绝**才可能和欠费有关。
+    ///
+    /// ⚠️ 网络异常、设备被占用、结果未知都跟账单无关 —— 把它们也引导到「补扣」，
+    /// 用户会因为一次 WiFi 掉线去白扣钱。
+    var kind: ShowerErrorKind = .other
+    /// 可补扣的未支付账单（只在 `kind == .serverRejected` 时传）
+    var unpaid: [UnpaidBill] = []
+    var deducting: Bool = false
+    var onDeductAll: () -> Void = {}
     let onDismiss: () -> Void
 
+    /// 扣钱前的二次确认态。key 跟着错误内容走，换一条错误就复位
+    @State private var confirming = false
+
+    /// 金额是服务端给的**字符串**，解析不出来时**不能悄悄按 0 算**：
+    /// 这张弹窗存在的唯一目的就是「会动钱，再停一下」，数字失真就失去意义了
+    private var amounts: [Double?] { unpaid.map { $0.yuan } }
+    private var total: Double { amounts.reduce(0) { $0 + ($1 ?? 0) } }
+    private var amountKnown: Bool { amounts.allSatisfy { $0 != nil } }
+
+    private var shownBills: [UnpaidBill] { kind == .serverRejected ? unpaid : [] }
+
     var body: some View {
-        DialogScrim(onTapOutside: onDismiss) {
-            AlertCard(title: "开阀失败", titleAlign: .leading) {
-                Text(message)
-                    .font(.system(size: 14))
-                    .foregroundStyle(colors.textPrimary)
+        ZStack {
+            DialogScrim(onTapOutside: onDismiss) {
+                AlertCard(title: shownBills.isEmpty ? "开阀失败" : "开阀失败 · 有未扣账单",
+                          titleAlign: .leading) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(message)
+                            .font(.system(size: 14))
+                            .foregroundStyle(colors.textPrimary)
+
+                        if !shownBills.isEmpty {
+                            Text("检测到 \(shownBills.count) 笔没扣成功的账单：")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(colors.warning)
+                                .padding(.top, 12)
+                            ForEach(shownBills) { bill in
+                                Text("· \(MoneyFormat.withSymbol(bill.yuan))   \(String((bill.consumeDate ?? "").prefix(16)))")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(colors.textSecondary)
+                                    .padding(.top, 4)
+                            }
+                            Text("账户有欠费时服务端会拒绝开阀")
+                                .font(.system(size: 11))
+                                .foregroundStyle(colors.textSecondary)
+                                .padding(.top, 8)
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } actions: {
-                DialogTextButton(title: "关闭", color: colors.accent, action: onDismiss)
-                DialogTextButton(title: "知道了", color: colors.accent, action: onDismiss)
+                } actions: {
+                    if shownBills.isEmpty {
+                        DialogTextButton(title: "知道了", color: colors.accent, action: onDismiss)
+                    } else {
+                        DialogTextButton(title: "关闭", color: colors.accent, action: onDismiss)
+                        DialogFilledButton(title: "立即补扣", color: colors.warning) {
+                            confirming = true
+                        }
+                    }
+                }
+            }
+
+            // 扣钱前的二次确认（和钱包页单笔代扣共用同一个组件，文案不会各写一份）
+            if confirming {
+                DeductConfirmDialogView(
+                    amount: amountKnown ? total : nil,
+                    detail: "共 \(shownBills.count) 笔",
+                    onConfirm: {
+                        confirming = false
+                        onDeductAll()
+                    },
+                    onDismiss: { confirming = false }
+                )
             }
         }
     }
@@ -262,15 +337,15 @@ struct BleRetryDialogView: View {
 
     var body: some View {
         DialogScrim(onTapOutside: onDismiss) {
-            AlertCard(title: "要用蓝牙方式开启吗？", titleAlign: .center) {
-                Text("「\(deviceName)」无法通过云端开启。\n\n如果这台设备需要手机蓝牙直连（开启时必须待在设备旁边），可以改用蓝牙方式。\n\n不确定的话：用官方「趣智校园」试一下——需要站到设备旁才能开的就是这一类。")
+            AlertCard(title: "尝试蓝牙开启？", titleAlign: .center) {
+                Text("云端开启失败。若设备支持蓝牙控制，请靠近设备后重试。")
                     .font(.system(size: 14))
                     .foregroundStyle(colors.textSecondary)
                     .lineSpacing(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } actions: {
                 DialogTextButton(title: "取消", color: colors.accent, action: onDismiss)
-                DialogFilledButton(title: "用蓝牙开启", color: colors.accent, action: onConfirm)
+                DialogFilledButton(title: "蓝牙开启", color: colors.accent, action: onConfirm)
             }
         }
     }
@@ -344,22 +419,22 @@ struct DeductConfirmDialogView: View {
 
     var body: some View {
         DialogScrim(onTapOutside: onDismiss) {
-            AlertCard(title: "确认补扣", titleAlign: .leading) {
+            AlertCard(title: "确认扣款", titleAlign: .leading) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(amount.map { MoneyFormat.withSymbol($0) } ?? "金额未知")
+                    Text(amount.map { MoneyFormat.withSymbol($0) } ?? "金额无法确认")
                         .font(.system(size: 28, weight: .bold))
                         .foregroundStyle(colors.textPrimary)
                     Text(detail)
                         .font(.system(size: 13))
                         .foregroundStyle(colors.textSecondary)
-                    Text("将从你的校园卡账户扣款，扣款后不可撤销。")
+                    Text(amount != nil ? "将从校园卡扣除以上金额，是否继续？" : "无法确认扣款金额，请到账单页核对。")
                         .font(.system(size: 12))
                         .foregroundStyle(colors.warning)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } actions: {
                 DialogTextButton(title: "取消", color: colors.accent, action: onDismiss)
-                DialogFilledButton(title: "确认扣款", color: colors.warning, action: onConfirm)
+                DialogFilledButton(title: "确认扣款", color: colors.warning, enabled: amount != nil, action: onConfirm)
             }
         }
     }
@@ -376,16 +451,22 @@ struct ConfirmDialogView: View {
     /// 取消键文案。传 nil 表示**不显示取消键**
     /// （对照 Android：只有能退出时才给 dismissButton「取消」）
     var cancelTitle: String? = "取消"
+    var compact: Bool = false
     let onConfirm: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
         DialogScrim(onTapOutside: onDismiss) {
-            AlertCard(title: title, titleAlign: .center) {
+            AlertCard(title: title, titleAlign: compact ? .leading : .center,
+                      cornerRadius: compact ? 24 : 28,
+                      contentSpacing: compact ? 10 : 16,
+                      actionSpacing: compact ? 10 : 20,
+                      cardPadding: compact ? 20 : 24,
+                      maxWidth: compact ? 290 : 340) {
                 Text(message)
                     .font(.system(size: 14))
                     .foregroundStyle(colors.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: compact ? .leading : .center)
             } actions: {
                 if let cancelTitle {
                     DialogTextButton(title: cancelTitle, color: colors.accent, action: onDismiss)

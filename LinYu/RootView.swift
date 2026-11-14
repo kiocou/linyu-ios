@@ -7,6 +7,8 @@ import SwiftUI
 struct RootView: View {
     @ObservedObject private var session = Session.shared
     @AppStorage("linyu.darkMode") private var isDark = false
+    /// 圆形揭示主题切换（对照 Android CircularRevealTheme）
+    @StateObject private var reveal = ThemeReveal()
 
     private var colors: AppColorSet { isDark ? .dark : .light }
 
@@ -14,15 +16,45 @@ struct RootView: View {
         Group {
             if session.isLoggedIn {
                 MainTabView()
+                    .id(session.requestGeneration)
                     .environmentObject(session)
             } else {
                 LoginView()
                     .environmentObject(session)
             }
         }
+        // 被挤下线：用系统弹窗告知原因，关掉才真的回到登录页
+        // （对照 Android 的强制下线弹窗。不告知的话用户只会看到「莫名其妙退出了」）
+        .alert(
+            "登录已失效",
+            isPresented: Binding(
+                get: { session.kickedReason != nil },
+                set: { if !$0 { _ = session.consumeKickReason() } }
+            )
+        ) {
+            Button("重新登录", role: .cancel) { _ = session.consumeKickReason() }
+        } message: {
+            Text("请重新登录。若正在用水，请确认设备已关闭；无法关闭时请使用官方应用或联系工作人员。")
+        }
+        // 遮罩盖在**所有内容之上**（包括弹窗），否则过渡时会看到底层先变色
+        .overlay {
+            GeometryReader { geo in
+                if let animation = reveal.animation {
+                    ThemeRevealOverlay(
+                        animation: animation,
+                        progress: reveal.progress,
+                        screen: geo.size
+                    )
+                }
+            }
+            // ⚠️ 不播放动画时这一层必须让点击穿过，否则它铺满全屏会挡住所有按钮
+            .allowsHitTesting(reveal.animation != nil)
+        }
+        .environmentObject(reveal)
         .environment(\.appColors, colors)
         .environment(\.isDarkMode, isDark)
         .preferredColorScheme(isDark ? .dark : .light)
+        .scrollIndicators(.hidden)
         .tint(colors.accent)
     }
 }

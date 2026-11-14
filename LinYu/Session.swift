@@ -36,6 +36,19 @@ final class Session: ObservableObject {
     }
 
     var isLoggedIn: Bool { !loginCode.isEmpty }
+    /// 每次建立/结束登录都换代，同账号重新登录也不接收旧请求结果。
+    private let generationLock = NSLock()
+    private var generation = UUID()
+    var requestGeneration: UUID {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation
+    }
+    private func advanceGeneration() {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        generation = UUID()
+    }
 
     // MARK: - 保存 / 恢复
 
@@ -47,6 +60,8 @@ final class Session: ObservableObject {
         telephone: String,
         displayName: String? = nil
     ) {
+        advanceGeneration()
+        RecoveryArchive.activate(owner: projectId + ":" + accountId)
         self.loginCode = loginCode
         self.userId = userId
         self.accountId = accountId
@@ -76,7 +91,10 @@ final class Session: ObservableObject {
         AppLog.shared.i("已更新本地手机号")
     }
 
-    func logout() {
+    func logout(preserveActiveRecovery: Bool = false) {
+        advanceGeneration()
+        RecoveryArchive.suspend(owner: projectId + ":" + accountId, preserve: preserveActiveRecovery)
+        ProfileCache.clear()
         loginCode = ""
         userId = ""
         accountId = ""
@@ -86,7 +104,45 @@ final class Session: ObservableObject {
         for k in ["loginCode", "userId", "accountId", "projectId", "telephone", "displayName"] {
             delete(k)
         }
-        AppLog.shared.i("已退出登录")
+        // 对照 Android `PrefsHelper.clear`：账号相关偏好要一起清，
+        // 否则换账号会看到上一任的绑定寝室 / 余额 / 上次设备。
+        //
+        // ⚠️ 被挤号时必须 `preserveActiveRecovery = true`：那时水可能还在流，
+        // 订单和开阀时间戳要留着，重登之后才能从首页找到停止入口。
+        // 恢复记录已按原账号归档，当前可见区必须清空。
+        Prefs.clear(preserveActiveRecovery: false)
+        // 使用中/结束通知一起撤掉 —— 退出登录后还挂着「正在使用」会误导人
+        // （对照 Android：logout 里会 cancel 通知）
+        AppNotifications.shared.clear()
+        Task { @MainActor in if !Session.shared.isLoggedIn { WidgetBridge.shared.clear() } }
+        if !preserveActiveRecovery {
+            kickedReason = nil
+            ActiveOrderStore.clear()
+        }
+        AppLog.shared.i("已退出登录（保留恢复态：\(preserveActiveRecovery)）")
+    }
+
+    // MARK: - 挤号
+
+    /// 被挤下线的原因；非 nil 时根视图弹提示。
+    @Published private(set) var kickedReason: String? = nil
+
+    /// 被挤下线（其他设备登录同一账号 / 凭证失效）。
+    ///
+    /// 用 `guard kickedReason == nil` 兜住重复触发 —— 多个请求几乎同时返回「登录失效」时，
+    /// 否则会反复 clear + 反复通知界面。
+    func kickOut(reason: String?) {
+        guard kickedReason == nil else { return }
+        let text = (reason?.isEmpty == false) ? reason! : "账号已在其他设备登录"
+        kickedReason = text
+        AppLog.shared.w("被挤下线：\(text)")
+        logout(preserveActiveRecovery: true)
+    }
+
+    /// 取走并清掉挤号原因（弹过提示就置空，免得重复弹）
+    func consumeKickReason() -> String? {
+        defer { kickedReason = nil }
+        return kickedReason
     }
 
     private func restore() {
@@ -97,6 +153,7 @@ final class Session: ObservableObject {
         telephone = get("telephone") ?? ""
         displayName = get("displayName") ?? ""
         if !loginCode.isEmpty {
+            RecoveryArchive.bindExisting(owner: projectId + ":" + accountId)
             AppLog.shared.i("已恢复登录态：projectId=\(projectId)")
         }
     }

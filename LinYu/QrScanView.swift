@@ -1,5 +1,7 @@
 import AVFoundation
 import SwiftUI
+import PhotosUI
+import Vision
 
 /// 二维码内容解析 —— 逐字节对照 Android 的 `QrScanActivity.parseSnCode`。
 ///
@@ -38,29 +40,30 @@ struct QrScanView: View {
 
     @State private var errorText: String?
     @State private var handled = false
+    @State private var torch = false
+    @State private var photo: PhotosPickerItem?
+    @State private var readingPhoto = false
+    @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            CameraPreview(
-                onCode: { raw in
-                    guard !handled else { return }
-                    if let sn = QrCodeParser.parseSnCode(raw) {
-                        handled = true
-                        onResult(sn)
-                    } else {
-                        errorText = "这不是热水器上的二维码（需要 \(QrCodeParser.devicePrefix) 开头）"
-                    }
-                },
+            if cameraStatus == .authorized {
+              CameraPreview(
+                torch: torch,
+                onCode: accept,
                 onError: { msg in
-                    errorText = msg
+                    DispatchQueue.main.async { errorText = msg }
                 }
             )
             .ignoresSafeArea()
+            }
 
             // 取景框
-            GeometryReader { geo in
+            if cameraStatus == .authorized {
+              GeometryReader { geo in
                 let side = min(geo.size.width, geo.size.height) * 0.66
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.9), lineWidth: 3)
@@ -68,6 +71,21 @@ struct QrScanView: View {
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
             .ignoresSafeArea()
+            } else {
+                VStack(spacing: 14) {
+                    Image(systemName: "camera.fill").font(.system(size: 36))
+                    Text("需要相机权限").font(.headline)
+                    Text(cameraStatus == .restricted ? "相机访问受限，请检查系统限制" : "请允许相机权限后扫码")
+                        .font(.system(size: 14)).multilineTextAlignment(.center)
+                    if cameraStatus == .notDetermined {
+                        Button("授予权限") { Task { await refreshCameraPermission() } }
+                    } else if cameraStatus == .denied {
+                        Button("去设置") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
+                }.foregroundStyle(.white).tint(.white).padding(24)
+            }
 
             VStack {
                 HStack {
@@ -88,6 +106,17 @@ struct QrScanView: View {
 
                 Spacer()
 
+                HStack(spacing: 32) {
+                    PhotosPicker(selection: $photo, matching: .images) {
+                        Label("从相册选择", systemImage: "photo")
+                    }.disabled(readingPhoto)
+                    if cameraStatus == .authorized, AVCaptureDevice.default(for: .video)?.hasTorch == true {
+                        Button { torch.toggle() } label: {
+                            Label(torch ? "关闭手电筒" : "打开手电筒", systemImage: torch ? "flashlight.on.fill" : "flashlight.off.fill")
+                        }
+                    }
+                }.foregroundStyle(.white).padding(.bottom, 20).buttonStyle(InstantButtonStyle())
+
                 VStack(spacing: 8) {
                     if let errorText {
                         Text(errorText)
@@ -95,7 +124,12 @@ struct QrScanView: View {
                             .foregroundStyle(Color(hex: 0xFFD166))
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 24)
-                    } else {
+                        if AVCaptureDevice.authorizationStatus(for: .video) == .denied {
+                            Button("去设置") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                            }
+                        }
+                    } else if cameraStatus == .authorized {
                         Text("对准热水器上的二维码")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.white)
@@ -108,11 +142,53 @@ struct QrScanView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task { await refreshCameraPermission() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { Task { await refreshCameraPermission() } }
+        }
+        .onDisappear { torch = false }
+        .task(id: photo) {
+            guard let photo else { return }
+            readingPhoto = true
+            defer { readingPhoto = false }
+            do {
+                guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadCorruptFile) }
+                let values = try await Task.detached(priority: .userInitiated) {
+                    let request = VNDetectBarcodesRequest()
+                    request.symbologies = [.qr]
+                    try VNImageRequestHandler(data: data).perform([request])
+                    return (request.results ?? []).compactMap(\.payloadStringValue)
+                }.value
+                guard !Task.isCancelled else { return }
+                if let value = values.first(where: { QrCodeParser.parseSnCode($0) != nil }) { accept(value) }
+                else { errorText = "未识别到设备二维码" }
+            } catch { if !Task.isCancelled { errorText = "图片识别失败，请换张图片" } }
+        }
+    }
+
+    @MainActor private func refreshCameraPermission() async {
+        if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            _ = await AVCaptureDevice.requestAccess(for: .video)
+        }
+        guard !Task.isCancelled else { return }
+        cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        if cameraStatus == .authorized { errorText = nil }
+        else { torch = false }
+    }
+
+    private func accept(_ raw: String) {
+        guard !handled else { return }
+        guard let sn = QrCodeParser.parseSnCode(raw) else { errorText = "未识别到设备二维码"; return }
+        handled = true
+        torch = false
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        onResult(sn)
     }
 }
 
 /// AVFoundation 相机预览 + 二维码识别
 private struct CameraPreview: UIViewRepresentable {
+    let torch: Bool
     let onCode: (String) -> Void
     let onError: (String) -> Void
 
@@ -127,7 +203,7 @@ private struct CameraPreview: UIViewRepresentable {
         return v
     }
 
-    func updateUIView(_ uiView: PreviewUIView, context: Context) {}
+    func updateUIView(_ uiView: PreviewUIView, context: Context) { context.coordinator.setTorch(torch) }
 
     static func dismantleUIView(_ uiView: PreviewUIView, coordinator: Coordinator) {
         coordinator.stop()
@@ -148,6 +224,8 @@ private struct CameraPreview: UIViewRepresentable {
         private let onCode: (String) -> Void
         private let onError: (String) -> Void
         private var lastCode: String = ""
+        private var stopped = false
+        private var device: AVCaptureDevice?
 
         init(onCode: @escaping (String) -> Void, onError: @escaping (String) -> Void) {
             self.onCode = onCode
@@ -164,16 +242,17 @@ private struct CameraPreview: UIViewRepresentable {
                         if granted {
                             self.configure(in: view)
                         } else {
-                            self.onError("没有相机权限。请到「设置 → 淋浴」里允许相机，或直接从附近设备里选。")
+                            self.onError("请允许相机权限后扫码")
                         }
                     }
                 }
             default:
-                onError("没有相机权限。请到「设置 → 淋浴」里允许相机，或直接从附近设备里选。")
+                onError("请允许相机权限后扫码")
             }
         }
 
         private func configure(in view: PreviewUIView) {
+            guard !stopped else { return }
             guard let device = AVCaptureDevice.default(for: .video),
                   let input = try? AVCaptureDeviceInput(device: device),
                   session.canAddInput(input) else {
@@ -182,6 +261,7 @@ private struct CameraPreview: UIViewRepresentable {
             }
 
             session.beginConfiguration()
+            self.device = device
             session.addInput(input)
 
             let output = AVCaptureMetadataOutput()
@@ -207,8 +287,21 @@ private struct CameraPreview: UIViewRepresentable {
         }
 
         func stop() {
+            stopped = true
+            setTorch(false)
             queue.async {
                 if self.session.isRunning { self.session.stopRunning() }
+            }
+        }
+
+        func setTorch(_ enabled: Bool) {
+            guard let device, device.hasTorch else { return }
+            queue.async {
+                do {
+                    try device.lockForConfiguration()
+                    defer { device.unlockForConfiguration() }
+                    if device.isTorchModeSupported(enabled ? .on : .off) { device.torchMode = enabled ? .on : .off }
+                } catch { DispatchQueue.main.async { self.onError("手电筒无法开启") } }
             }
         }
 

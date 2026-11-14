@@ -118,30 +118,35 @@ final class AppLog: ObservableObject {
 
     // MARK: - 导出
 
-    /// 生成导出文件（含内存里最近的全部 + 文件里的历史）
+    /// 对照 Android exportLogs：优先导出文件末尾 500 行，取不到再用内存。
     func exportFile(note: String? = nil) -> URL? {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmmss"
         let name = "linyu-log-\(f.string(from: Date())).txt"
 
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = FileManager.default.temporaryDirectory
         let url = dir.appendingPathComponent(name)
 
-        var text = header(note: note)
-        text += "\n===== 本次运行（内存缓冲）=====\n"
-        for l in lines {
-            text += "[\(l.timeText)] [\(l.level.rawValue)] \(l.message)\n"
-            if let d = l.detail, !d.isEmpty {
-                text += "  \(d.replacingOccurrences(of: "\n", with: "\n  "))\n"
-            }
+        // 等待已排队的文件写入完成，确保刚发生的错误也包含在导出里。
+        let history = queue.sync {
+            (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
         }
-        text += "\n===== 历史（文件）=====\n"
-        if let history = try? String(contentsOf: fileURL, encoding: .utf8) {
-            text += history
-        } else {
-            text += "（无历史文件）\n"
+        var recent = history.split(separator: "\n", omittingEmptySubsequences: false)
+        if recent.last == "" { recent.removeLast() }
+        if recent.isEmpty {
+            let memory = lines.map { line in
+                var text = "[\(line.timeText)] [\(line.level.rawValue)] \(line.message)"
+                if let detail = line.detail, !detail.isEmpty {
+                    text += "\n  " + detail.replacingOccurrences(of: "\n", with: "\n  ")
+                }
+                return text
+            }.joined(separator: "\n")
+            recent = memory.split(separator: "\n", omittingEmptySubsequences: false)
+            if recent.last == "" { recent.removeLast() }
         }
+        guard !recent.isEmpty else { w("没有可导出的日志"); return nil }
+        let text = header(note: note) + "\n" + recent.suffix(500).joined(separator: "\n") + "\n"
 
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
@@ -163,6 +168,7 @@ final class AppLog: ObservableObject {
         # LinYu iOS 运行日志
         导出时间: \(dfFull.string(from: Date()))
         App 版本: \(version) (\(build))
+        源码版本: \(Bundle.main.object(forInfoDictionaryKey: "LinYuSourceRevision") as? String ?? "未知")
         设备: \(UIDevice.modelIdentifier) / \(UIDevice.osName) \(UIDevice.osVersion)
         登录: \(Session.shared.isLoggedIn ? "是（projectId=\(Session.shared.projectId)）" : "否")
 
@@ -183,29 +189,6 @@ final class AppLog: ObservableObject {
 
     /// 手机号、loginCode、签名、密码一律打码
     static func mask(_ s: String) -> String {
-        var out = s
-        // 11 位手机号
-        out = out.replacingOccurrences(
-            of: #"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)"#,
-            with: "$1****$2",
-            options: .regularExpression
-        )
-        // 常见敏感字段：key=value 或 "key":"value"
-        let keys = ["loginCode", "password", "signature", "token", "sign"]
-        for k in keys {
-            // form: key=xxx&
-            out = out.replacingOccurrences(
-                of: "(\(k)=)([^&\\s\"]+)",
-                with: "$1***",
-                options: .regularExpression
-            )
-            // json: "key":"xxx"
-            out = out.replacingOccurrences(
-                of: "(\"\(k)\"\\s*:\\s*\")([^\"]*)(\")",
-                with: "$1***$3",
-                options: .regularExpression
-            )
-        }
-        return out
+        LogRedactor.mask(s)
     }
 }

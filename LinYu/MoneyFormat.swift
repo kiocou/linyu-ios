@@ -12,9 +12,10 @@ import Foundation
 /// 金额常年是 `5.000`，硬留 3 位会多一个无意义的 0。
 enum MoneyFormat {
 
-    /// `0.025` → `"0.025"`；`5.0` → `"5.0"`
+    /// 至少两位、最多三位：`2` → `"2.00"`，`2.1` → `"2.10"`，`0.025` → `"0.025"`。
     static func format(_ value: Double) -> String {
-        let s = String(format: "%.3f", value)
+        guard value.isFinite else { return "—" }
+        let s = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), value)
         return s.hasSuffix("0") ? String(s.dropLast()) : s
     }
 

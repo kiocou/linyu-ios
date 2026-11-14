@@ -1,0 +1,92 @@
+import SwiftUI
+import Combine
+
+@MainActor
+final class UserPresentation: ObservableObject {
+    enum Page: String, Identifiable {
+        case background, log
+        var id: String { rawValue }
+    }
+    enum Dialog { case phone, password, useCode, room, logout }
+    @Published var page: Page?
+    @Published var dialog: Dialog?
+}
+
+struct UserDialogs: View {
+    @EnvironmentObject private var presentation: UserPresentation
+    @EnvironmentObject private var store: AppDataStore
+    @Environment(\.appColors) private var colors
+    @ObservedObject var scanner: BLEScanner
+    @ObservedObject var flow: ShowerFlow
+    let onRoomSelected: (String) -> Void
+    var onUseCodeRedeemed: () -> Void = {}
+    var onAccountChanged: (String) -> Void = { _ in }
+    private var rooms: [String] {
+        Array(Set(scanner.devices.compactMap { device in
+            guard let sn = device.parsedSnCode, let name = store.deviceInfos[sn]?.deviceName else { return nil }
+            return DeviceInfo.roomKey(name)
+        })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+    var body: some View {
+        switch presentation.dialog {
+        case .logout:
+            ConfirmDialogView(
+                title: canLogout ? "确认退出" : "无法退出",
+                message: canLogout ? "确定退出登录？" : "设备使用中，无法退出",
+                confirmTitle: canLogout ? "退出" : "返回",
+                destructive: canLogout,
+                cancelTitle: canLogout ? "取消" : nil,
+                compact: true,
+                onConfirm: {
+                    if canLogout {
+                        presentation.dialog = nil
+                        flow.reset()
+                        Session.shared.logout()
+                    } else {
+                        flow.toast = "设备使用中，无法退出"
+                        presentation.dialog = nil
+                    }
+                },
+                onDismiss: { presentation.dialog = nil }
+            )
+        case .phone:
+            ChangePhoneDialog(currentPhone: Session.shared.telephone,
+                              onDismiss: { presentation.dialog = nil },
+                              onSuccess: { onAccountChanged("手机号已更换") })
+        case .password:
+            ChangePasswordDialog(currentPhone: Session.shared.telephone,
+                                 onSuccess: { onAccountChanged("密码已修改") }) { presentation.dialog = nil }
+        case .useCode:
+            UseCodeRedeemView(onDismiss: { presentation.dialog = nil }, onRedeemed: onUseCodeRedeemed)
+        case .room:
+            DialogScrim(onTapOutside: { presentation.dialog = nil }) {
+                AlertCard(title: "选择设备位置", titleAlign: .leading) {
+                    if rooms.isEmpty {
+                        Text("附近暂无设备").foregroundStyle(colors.textSecondary)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                ForEach(rooms, id: \.self) { key in
+                                    Button {
+                                        Prefs.boundRoom = key
+                                        presentation.dialog = nil
+                                        onRoomSelected(key)
+                                    } label: {
+                                        TailEllipsisText(text: key, fontSize: 14, color: colors.textPrimary)
+                                            .frame(minHeight: 44)
+                                    }.buttonStyle(InstantButtonStyle())
+                                }
+                            }
+                        }.frame(height: min(CGFloat(rooms.count) * 44, 210))
+                    }
+                } actions: {
+                    DialogTextButton(title: "关闭", color: colors.accent) { presentation.dialog = nil }
+                }
+            }
+        case nil: EmptyView()
+        }
+    }
+    private var canLogout: Bool {
+        flow.activeOrder == nil && flow.restoredOrders.isEmpty && !flow.controlBusy
+    }
+}

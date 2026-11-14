@@ -4,6 +4,7 @@ import SwiftUI
 ///
 /// 自上而下：余额标题 → 余额卡 → 消费趋势 → 账单（**最近 20 次**）→ 账单详情弹窗。
 struct WalletScreenView: View {
+    @ObservedObject private var widgets = WidgetBridge.shared
     @EnvironmentObject private var session: Session
     @Environment(\.appColors) private var colors
 
@@ -11,8 +12,12 @@ struct WalletScreenView: View {
     /// 页面切走再切回来不会重新请求
     @ObservedObject var store: AppDataStore
     @ObservedObject var flow: ShowerFlow
+    /// 未支付账单 + 代扣（对照 Android 的 MainViewModel 同名部分）
+    @ObservedObject var deduct: DeductService
 
     @State private var detailBill: BillDTO?
+    /// 待确认的代扣账单。这是动钱的操作，不弹确认框直接扣太莽了
+    @State private var pendingDeduct: BillDTO?
     @State private var showEditDialog = false
     @State private var editValue = ""
     @State private var trendEnabled = Prefs.trendEnabled
@@ -27,14 +32,14 @@ struct WalletScreenView: View {
 
     var body: some View {
         ZStack {
-            colors.background.ignoresSafeArea()
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // 标题按**钱在哪**写：一卡通 → 「一卡通余额」，钱包 → 「趣智校园余额」
                     Text(BalanceEstimator.title)
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(colors.textPrimary)
+                        .frame(height: PageLayout.titleHeight)
+                        .frame(height: PageLayout.headerHeight, alignment: .top)
 
                     balanceCard
                         .padding(.top, 16)
@@ -60,18 +65,34 @@ struct WalletScreenView: View {
                             Spacer()
                         }
                         .padding(24)
-                    } else if recent.isEmpty {
+                    } else if recent.isEmpty && store.billsError != nil {
+                        Button("获取账单失败，请重试") { Task { await store.reload() } }
+                            .foregroundStyle(colors.accent).padding(.top, 12)
+                    } else if recent.isEmpty && store.loaded {
                         Text("暂无账单数据")
                             .font(.system(size: 14))
                             .foregroundStyle(colors.textSecondary)
                             .padding(.top, 12)
-                    } else {
+                    } else if !recent.isEmpty {
+                        // ⚠️ 在循环外取一次：`unpaidConsumeDates` 是计算属性，
+                        // 写进 ForEach 里的话每渲染一行就重建一次整个 Set
+                        let unpaidDates = deduct.unpaidConsumeDates
                         VStack(spacing: 8) {
                             ForEach(recent) { bill in
-                                billCard(bill)
+                                billCard(
+                                    bill,
+                                    unpaid: bill.consumeDate.map { unpaidDates.contains($0) } ?? false,
+                                    deducting: deduct.deductingConsumeDate == bill.consumeDate,
+                                    onDeduct: { pendingDeduct = bill }
+                                )
                             }
                         }
                         .padding(.top, 12)
+                    }
+
+                    if !recent.isEmpty, let error = store.billsError {
+                        Button(error) { Task { await store.reload() } }
+                            .foregroundStyle(colors.accent).padding(.top, 12)
                     }
 
                     Color.clear.frame(height: 100)   // 给悬浮导航栏留位置
@@ -79,9 +100,14 @@ struct WalletScreenView: View {
                 .padding(20)
             }
             .clipped()
-            .refreshable { await store.reload() }
+            .refreshable {
+                await store.reload()
+                await deduct.load()
+            }
         }
         .task { await load() }
+        .task { await openWidgetBill() }
+        .onChange(of: widgets.pendingBillID) { _ in Task { await openWidgetBill() } }
         .onAppear { trendEnabled = Prefs.trendEnabled }
         .overlay {
             if let b = detailBill {
@@ -90,10 +116,31 @@ struct WalletScreenView: View {
             if showEditDialog {
                 manualBalanceDialog
             }
+            if let bill = pendingDeduct {
+                DeductConfirmDialogView(
+                    amount: bill.yuan,
+                    detail: String((bill.consumeDate ?? "").prefix(16)),
+                    onConfirm: {
+                        pendingDeduct = nil
+                        Task { await requestDeduct(bill) }
+                    },
+                    onDismiss: { pendingDeduct = nil }
+                )
+            }
         }
     }
 
     // MARK: - 余额卡
+
+    @MainActor private func openWidgetBill() async {
+        guard let id = widgets.pendingBillID else { return }
+        widgets.pendingBillID = nil
+        guard !id.isEmpty else { return }
+        if let bill = store.bills.first(where: { $0.id == id }) { detailBill = bill; return }
+        await store.reload()
+        if let bill = store.bills.first(where: { $0.id == id }) { detailBill = bill }
+        else { flow.toast = "未找到这笔账单，请刷新" }
+    }
 
     private var balanceCard: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -117,7 +164,7 @@ struct WalletScreenView: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 4)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(InstantButtonStyle())
                 }
             }
 
@@ -138,7 +185,12 @@ struct WalletScreenView: View {
 
     // MARK: - 账单卡片
 
-    private func billCard(_ bill: BillDTO) -> some View {
+    private func billCard(
+        _ bill: BillDTO,
+        unpaid: Bool = false,
+        deducting: Bool = false,
+        onDeduct: @escaping () -> Void = {}
+    ) -> some View {
         let typeColor: Color = bill.isDrinkingWaterBill
             ? Color(hex: 0x10B981)
             : (bill.deviceTypeLabel.contains("洗手台") ? Color(hex: 0xFF9800) : colors.accent)
@@ -161,9 +213,27 @@ struct WalletScreenView: View {
                         .foregroundStyle(colors.textSecondary)
                 }
                 Spacer(minLength: 12)
-                Text("-¥ \(bill.consumeMoney ?? "0")")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(colors.danger)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text("-¥ \(bill.yuan.map { MoneyFormat.format($0) } ?? "—")")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(colors.danger)
+
+                    // 只有服务端说这条**没扣成功**时才出现按钮。判断依据是
+                    // `/order/weixinScorePay/unPay/queryBill` 的返回，不去猜账单字段含义。
+                    if unpaid {
+                        Button(action: onDeduct) {
+                            Text(deducting ? "扣款中…" : "请求代扣")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .frame(height: 30)
+                                .background(deducting ? colors.textSecondary.opacity(0.4) : colors.warning)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(InstantButtonStyle())
+                        .disabled(deducting)
+                    }
+                }
             }
             .padding(14)
             .frame(maxWidth: .infinity)
@@ -180,7 +250,7 @@ struct WalletScreenView: View {
                 VStack(spacing: 0) {
                     DetailRowView(label: "设备名", value: dto.displayNamePart)
                     DetailRowView(label: "设备类型", value: dto.deviceTypeLabel)
-                    DetailRowView(label: "消费金额", value: "-¥ \(dto.consumeMoney ?? "0")")
+                    DetailRowView(label: "消费金额", value: "-¥ \(dto.yuan.map { MoneyFormat.format($0) } ?? "—")")
                     DetailRowView(label: "消费时间", value: String((dto.consumeDate ?? "").prefix(19)))
                     DetailRowView(label: "订单号", value: dto.orderId ?? "-")
                 }
@@ -216,10 +286,31 @@ struct WalletScreenView: View {
         }
     }
 
+    /// 单笔代扣 + 结果文案。
+    ///
+    /// ⚠️ 结果未知**不能说失败**：请求可能已经发出去了，
+    /// 说失败就是在鼓励用户再点一次 → 扣两次。
+    private func requestDeduct(_ bill: BillDTO) async {
+        guard let date = bill.consumeDate, !date.isEmpty else {
+            flow.toast = "账单信息不完整，无法代扣"
+            return
+        }
+        switch await deduct.requestDeduct(consumeDate: date) {
+        case .ok:
+            flow.toast = "代扣成功"
+        case let .failed(_, reason):
+            flow.toast = reason ?? "代扣失败"
+        case .unknown:
+            flow.toast = "结果未知，请下拉刷新确认后再操作"
+        }
+    }
+
     // MARK: - 加载
 
     private func load() async {
         await store.loadIfNeeded()
+        // 进页面拉一次未支付列表 —— 残留账单是服务端状态，只有它说了算
+        await deduct.load()
         trendEnabled = Prefs.trendEnabled
     }
 }

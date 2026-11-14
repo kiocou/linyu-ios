@@ -14,12 +14,13 @@ struct LoginView: View {
     @State private var phone = ""
     @State private var password = ""
     @State private var smsCode = ""
-    @State private var isSmsMode = false
+    @State private var isSmsMode = true
     @State private var busy = false
     @State private var errorText: String?
     @State private var countdown = 0
-    /// 进场动画：整块内容 0.8 → 1.0（Android 用 tween(400)）
-    @State private var animated = false
+    @State private var countdownTask: Task<Void, Never>?
+    @State private var smsTask: Task<Void, Never>?
+    @StateObject private var systemPasswords = SystemPasswordPicker()
 
     private var canSubmit: Bool {
         if phone.count != 11 { return false }
@@ -62,21 +63,26 @@ struct LoginView: View {
                 .padding(.horizontal, 28)
                 .padding(.top, 90)
                 .padding(.bottom, 28)
-                // ⚠️ 动画**只绑定 animated 这一个值**，并且只作用于 scale。
-                // 之前把 .animation 挂在最外层 ZStack 上，结果切换密码/验证码
-                // 模式时整块内容（含输入框切换）都被套上 0.4s 缓动，
-                // 看起来就是「渐隐 + 平移」的残影。
-                .scaleEffect(animated ? 1.0 : 0.8)
-                .animation(.easeOut(duration: 0.4), value: animated)
                 .offset(y: -50)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
+        // 固定白色登录卡片在系统深色模式下也使用深色占位文字。
+        .environment(\.colorScheme, .light)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
         .onAppear {
-            animated = true
             // 回填上次保存的凭据：手机号总是填；密码只有上次是**密码登录**才有。
             // 验证码是一次性的，不存。
             if phone.isEmpty, let saved = SavedCredential.phone { phone = saved }
             if password.isEmpty, let saved = SavedCredential.password { password = saved }
+            if !password.isEmpty { isSmsMode = false }
+        }
+        .onDisappear {
+            countdownTask?.cancel()
+            smsTask?.cancel()
+            countdown = 0
+            password = ""
+            smsCode = ""
         }
     }
 
@@ -84,10 +90,8 @@ struct LoginView: View {
 
     private var logo: some View {
         VStack(spacing: 0) {
-            // Android 用 app_logo（80dp，圆角 18）。iOS 没有同名资源，
-            // 用白底 + 自绘花洒图标代替，尺寸圆角保持一致
-            // 和 Android 一样用 app_logo（`R.drawable.app_logo`，80dp、圆角 18）
-            Image("app_logo")
+            // 直接使用 Android 的 app_logo 图片资源。
+            Image("LoginLogo")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
@@ -125,13 +129,16 @@ struct LoginView: View {
             Button {
                 isSmsMode.toggle()
                 errorText = nil
+                password = ""
+                smsCode = ""
             } label: {
                 Text(isSmsMode ? "密码登录" : "验证码登录")
                     .font(.system(size: 13))
                     .foregroundColor(Color(hex: 0x1A73E8))
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(InstantButtonStyle())
+            .disabled(busy)
             .padding(.bottom, 16)
 
             // 当前模式的一句说明。放这儿是因为用户最容易卡住的两个点都在这：
@@ -146,6 +153,17 @@ struct LoginView: View {
                 .padding(.bottom, 14)
 
             if isSmsMode { smsField } else { passwordField }
+
+            if !isSmsMode {
+                Button("使用已保存的密码") {
+                    systemPasswords.choose(onFailure: { errorText = $0 }) { user, secret in
+                        phone = user
+                        password = secret
+                    }
+                }
+                .font(.system(size: 13)).padding(.top, 12)
+                .buttonStyle(InstantButtonStyle()).disabled(busy)
+            }
 
             loginButton
                 .padding(.top, 24)
@@ -177,7 +195,7 @@ struct LoginView: View {
             title: "手机号",
             text: $phone,
             systemImage: "phone.fill",
-            keyboard: .numberPad,
+            keyboard: isSmsMode ? .numberPad : .default,
             secured: false
         )
     }
@@ -214,7 +232,7 @@ struct LoginView: View {
                     .background(canSend ? Color(hex: 0x1A73E8) : Color(hex: 0x90CAF9))
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(InstantButtonStyle())
             .disabled(!canSend)
         }
     }
@@ -259,7 +277,8 @@ struct LoginView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.gray)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityLabel("清空\(title)")
             }
         }
         .padding(.horizontal, 14)
@@ -292,31 +311,39 @@ struct LoginView: View {
             .background(canSubmit ? Color(hex: 0x1A73E8) : Color(hex: 0x90CAF9))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(InstantButtonStyle())
         .disabled(busy || !canSubmit)
     }
 
     // MARK: - 动作
 
     private func sendCode() {
-        guard phone.count == 11 else { return }
+        guard phone.count == 11, countdown == 0 else { return }
+        let requestedPhone = phone
+        errorText = nil
         countdown = 60
         startCountdown()
-        Task {
+        smsTask = Task { @MainActor in
             do {
-                try await AuthService.sendSmsCode(phone: phone)
+                try await AuthService.sendSmsCode(phone: requestedPhone)
             } catch {
+                guard !Task.isCancelled else { return }
+                countdownTask?.cancel()
+                countdown = 0
                 errorText = Self.friendly(error)
             }
         }
     }
 
     private func startCountdown() {
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            if countdown <= 0 {
-                timer.invalidate()
-            } else {
-                countdown -= 1
+        countdownTask?.cancel()
+        let deadline = Date().addingTimeInterval(60)
+        countdownTask = Task { @MainActor in
+            while countdown > 0 {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                countdown = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
             }
         }
     }
@@ -325,15 +352,21 @@ struct LoginView: View {
         guard !busy else { return }
         busy = true
         errorText = nil
+        let submittedPhone = phone
+        let submittedPassword = password
+        let submittedCode = smsCode
+        let submittedSmsMode = isSmsMode
         Task {
             defer { busy = false }
             do {
-                let data = isSmsMode
-                    ? try await AuthService.smsLogin(phone: phone, smsCode: smsCode)
-                    : try await AuthService.login(phone: phone, password: password)
+                let data = submittedSmsMode
+                    ? try await AuthService.smsLogin(phone: submittedPhone, smsCode: submittedCode)
+                    : try await AuthService.login(phone: submittedPhone, password: submittedPassword)
                 // 验证码是一次性的，只有密码登录才存——下次打开自动填好，一键登录
-                if !isSmsMode { SavedCredential.save(phone: phone, password: password) }
-                AuthService.persist(data, phone: phone)
+                if !submittedSmsMode { SavedCredential.save(phone: submittedPhone, password: submittedPassword) }
+                password = ""
+                smsCode = ""
+                AuthService.persist(data, phone: submittedPhone)
             } catch {
                 errorText = Self.friendly(error)
             }
@@ -341,8 +374,6 @@ struct LoginView: View {
     }
 
     private static func friendly(_ e: Error) -> String {
-        let s = e.localizedDescription
-        if s.contains("登录") || s.contains("密码") || s.contains("验证码") { return s }
-        return "登录失败：\(s)"
+        LoginFeedback.message(e)
     }
 }

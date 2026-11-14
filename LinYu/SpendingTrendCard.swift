@@ -50,7 +50,8 @@ struct SpendingTrendCard: View {
                         .frame(width: 40, height: 40)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityLabel(collapsed ? "展开消费趋势" : "折叠消费趋势")
             }
 
             if !collapsed {
@@ -134,6 +135,7 @@ struct SpendingTrendCard: View {
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .linyuCard(colors, radius: 18)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
@@ -163,15 +165,18 @@ struct SpendingTrendCard: View {
         HStack(spacing: 0) {
             ForEach(items, id: \.key) { item in
                 let active = item.key == selected
-                Text(item.label)
-                    .font(.system(size: 11, weight: active ? .medium : .regular))
-                    .foregroundStyle(active ? colors.accent : colors.textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 30)
-                    .background(active ? colors.accent.opacity(0.14) : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(Rectangle())
-                    .onTapGesture { onSelect(item.key) }
+                Button { onSelect(item.key) } label: {
+                    Text(item.label)
+                        .font(.system(size: 11, weight: active ? .medium : .regular))
+                        .foregroundStyle(active ? colors.accent : colors.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 30)
+                        .background(active ? colors.accent.opacity(0.14) : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(InstantButtonStyle())
+                .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
         .frame(height: 30)
@@ -273,7 +278,10 @@ private struct TrendChartView: View {
                         if points.count == 1 {
                             idx = 0
                         } else {
-                            let ratio = v.location.x / max(geo.size.width, 1)
+                            // 命中区域使用与绘制一致的边距，月视图首尾点也能准确选中。
+                            let barWidth = geo.size.width / CGFloat(points.count) * 0.58
+                            let inset = isBar ? max(barWidth / 2, 5) : 5
+                            let ratio = (v.location.x - inset) / max(geo.size.width - 2 * inset, 1)
                             idx = Int((ratio * CGFloat(points.count - 1)).rounded())
                         }
                         onSelect(min(max(idx, 0), points.count - 1))

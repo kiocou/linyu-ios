@@ -2,25 +2,6 @@ import Foundation
 import CoreBluetooth
 import Combine
 
-/// 从 `0x23` 状态帧里解析出来的字段
-struct DeviceState {
-    let protocolType: String
-    let randomNumber: String
-    let state: Int
-    let devType: Int
-    let a1: Int
-    /// 设备自报的 MAC（`p[13..18]`），用于核对是不是目标设备
-    let mac: String
-    let payloadLength: Int
-
-    var isIdle: Bool { state == 0 }
-    /// 已关阀但有遗留未结算记录
-    var hasPendingSettle: Bool { state == 3 || state == 6 }
-
-    var describe: String {
-        "protocol=\(protocolType.isEmpty ? "-" : protocolType) state=\(state) devType=\(devType) a1=\(a1) random=\(randomNumber.count > 12 ? String(randomNumber.prefix(12)) + "…" : randomNumber)"
-    }
-}
 
 /// 蓝牙水表会话：连接、服务发现、分片收发、以及五条业务命令。
 ///
@@ -76,6 +57,9 @@ final class BleSession: NSObject, ObservableObject {
     private var notifyChar: CBCharacteristic?
 
     private var connectContinuation: CheckedContinuation<Bool, Never>?
+    private var callbackGuard = BleCallbackGuard()
+    private var replyTokens: [UInt8: UUID] = [:]
+    private var earlyReply = BleReplyBuffer()
     /// 当前这一片写入的序号（超时闭包靠它判断「还是不是我这片」）
     private var writeToken = 0
     /// 单片写入超时（秒）
@@ -94,6 +78,8 @@ final class BleSession: NSObject, ObservableObject {
     }
 
     // MARK: - 连接
+    var operationAllowed: () -> Bool = { true }
+    private var canOperate: Bool { !Task.isCancelled && operationAllowed() }
 
     /// 用扫描到的 `CBPeripheral` 连接（**iOS 唯一可行的方式**）
     @discardableResult
@@ -102,18 +88,31 @@ final class BleSession: NSObject, ObservableObject {
         using manager: CBCentralManager,
         timeout: TimeInterval = 15
     ) async -> Bool {
+        guard canOperate else { return false }
         central = manager
         guard let central else { return false }
         guard central.state == .poweredOn else {
-            setPhase(.failed("蓝牙未开启（\(describe(central.state))）"))
+            setPhase(.failed("蓝牙不可用，请检查蓝牙开关和权限"))
             return false
         }
 
-        // 干净地断开上一次
-        if let old = peripheral {
-            central.cancelPeripheralConnection(old)
+        // 同设备的旧连接必须收到终止事件；不靠固定400ms猜测蓝牙栈已处理完。
+        if peripheral != nil { disconnect() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while callbackGuard.isRetiring(p.identifier) {
+            guard canOperate else { return false }
+            guard Date() < deadline else {
+                setPhase(.failed("等待旧连接断开超时，请检查蓝牙后重试"))
+                AppLog.shared.w("BLE 旧连接未确认断开，拒绝复用同一设备连接")
+                return false
+            }
+            do { try await Task.sleep(nanoseconds: 20_000_000) }
+            catch { return false }
         }
+        guard canOperate, let generation = callbackGuard.begin(p.identifier) else { return false }
         resetBuffers()
+        writeChar = nil
+        notifyChar = nil
 
         peripheral = p
         p.delegate = self
@@ -124,11 +123,13 @@ final class BleSession: NSObject, ObservableObject {
 
             // 超时兜底：绝不能无限等
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.phase == .connecting || self.phase == .discovering else { return }
-                self.setPhase(.failed("连接超时（\(Int(timeout))s），可能信号太弱，请靠近设备"))
+                guard let self, self.callbackGuard.accepts(p.identifier, generation: generation),
+                      self.phase == .connecting || self.phase == .discovering else { return }
+                self.setPhase(.failed("连接超时，请靠近设备重试"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil
                 if let p = self.peripheral {
+                    self.callbackGuard.retire(p.identifier, waitForTerminal: p.state != .disconnected)
                     self.central?.cancelPeripheralConnection(p)
                 }
             }
@@ -139,9 +140,11 @@ final class BleSession: NSObject, ObservableObject {
             central.connect(p, options: nil)
         }
 
+        guard callbackGuard.accepts(p.identifier, generation: generation) else { return false }
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
 
+        guard canOperate else { disconnect(); return false }
         if ok {
             setPhase(.ready)
             AppLog.shared.i("BLE 就绪：FF00/FF01/FF02 齐全，通知已开启")
@@ -150,7 +153,12 @@ final class BleSession: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        connectContinuation?.resume(returning: false)
+        connectContinuation = nil
         if let p = peripheral, let central {
+            callbackGuard.retire(p.identifier, waitForTerminal: p.state != .disconnected)
             central.cancelPeripheralConnection(p)
         }
         resetBuffers()
@@ -268,6 +276,9 @@ final class BleSession: NSObject, ObservableObject {
 
     /// 发一条命令并等对应 cmd 的应答
     private func sendAndAwait(cmd: UInt8, data: [UInt8], timeout: TimeInterval) async -> [UInt8]? {
+        guard canOperate, let request = earlyReply.begin(command: cmd) else { return nil }
+        defer { earlyReply.finish(request) }
+        let generation = callbackGuard.generation
         let wire = BleFrame.cmdToWire(cmd: cmd, data: data)
         AppLog.shared.i("→ BLE 发 0x\(String(cmd, radix: 16))（\(wire.count)B）",
                         BleFrame.toHex(wire))
@@ -276,16 +287,21 @@ final class BleSession: NSObject, ObservableObject {
             AppLog.shared.w("0x\(String(cmd, radix: 16)) 写入失败")
             return nil
         }
+        guard canOperate, callbackGuard.generation == generation else { return nil }
+        // CoreBluetooth 通知可能比最后一片 didWrite 回执更早到，不能丢掉。
+        if let reply = earlyReply.take(request) { return reply }
         return await awaitReply(cmd: cmd, timeout: timeout)
     }
 
     /// 分片写入 FF02，逐片等回执
     private func writeChunks(_ wire: [UInt8]) async -> Bool {
         guard let peripheral, let char = writeChar else { return false }
+        let generation = callbackGuard.generation
 
         var offset = 0
         var index = 0
         while offset < wire.count {
+            guard canOperate, callbackGuard.accepts(peripheral.identifier, generation: generation), phase == .ready else { return false }
             let len = min(Self.chunkSize, wire.count - offset)
             let chunk = Array(wire[offset..<(offset + len)])
 
@@ -323,11 +339,15 @@ final class BleSession: NSObject, ObservableObject {
 
     /// 等某个命令字的应答
     private func awaitReply(cmd: UInt8, timeout: TimeInterval) async -> [UInt8]? {
-        await withCheckedContinuation { (cont: CheckedContinuation<[UInt8]?, Never>) in
+        let token = UUID()
+        return await withCheckedContinuation { (cont: CheckedContinuation<[UInt8]?, Never>) in
+            replyWaiters.removeValue(forKey: cmd)?.resume(returning: nil)
+            replyTokens[cmd] = token
             replyWaiters[cmd] = cont
 
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                guard let self else { return }
+                guard let self, self.replyTokens[cmd] == token else { return }
+                self.replyTokens[cmd] = nil
                 if let w = self.replyWaiters.removeValue(forKey: cmd) {
                     AppLog.shared.w("等待 0x\(String(cmd, radix: 16)) 应答超时")
                     w.resume(returning: nil)
@@ -360,7 +380,10 @@ final class BleSession: NSObject, ObservableObject {
                             BleFrame.toHexSpaced(payload))
 
             if let waiter = replyWaiters.removeValue(forKey: cmd) {
+                replyTokens[cmd] = nil
                 waiter.resume(returning: payload)
+            } else {
+                earlyReply.offer(command: cmd, payload: payload)
             }
         }
     }
@@ -373,9 +396,11 @@ final class BleSession: NSObject, ObservableObject {
     }
 
     private func resetBuffers() {
+        earlyReply.reset()
         rxBuffer.removeAll()
         replyWaiters.values.forEach { $0.resume(returning: nil) }
         replyWaiters.removeAll()
+        replyTokens.removeAll()
         writeContinuation?.resume(returning: false)
         writeContinuation = nil
         servicesPending = 0
@@ -385,37 +410,8 @@ final class BleSession: NSObject, ObservableObject {
 
     // MARK: - 解析
 
-    /// 解析 `0x23` 载荷。只有 28 字节（短）和 ≥31 字节（长）两种布局。
-    static func parseState(_ p: [UInt8]) -> DeviceState? {
-        guard !p.isEmpty, p[0] == 0x80 else { return nil }
-
-        func hex(_ range: Range<Int>) -> String {
-            range.map { String(format: "%02X", p[$0]) }.joined()
-        }
-
-        if p.count == 28 {
-            return DeviceState(
-                protocolType: "",
-                randomNumber: hex(21..<23),
-                state: Int(p[19]),
-                devType: Int(p[23]),
-                a1: Int(p[24]),
-                mac: p.count >= 19 ? hex(13..<19) : "",
-                payloadLength: p.count
-            )
-        }
-        if p.count >= 31 {
-            return DeviceState(
-                protocolType: String(format: "%02X", p[19]),
-                randomNumber: hex(24..<28),
-                state: Int(p[28]),
-                devType: Int(p[29]),
-                a1: Int(p[30]),
-                mac: p.count >= 19 ? hex(13..<19) : "",
-                payloadLength: p.count
-            )
-        }
-        return nil
+    static func parseState(_ payload: [UInt8]) -> DeviceState? {
+        DeviceStateParser.parse(payload)
     }
 
     // MARK: - 工具
@@ -457,6 +453,7 @@ extension BleSession {
 
     /// 已连接（BLEScanner 的 CBCentralManagerDelegate 转发过来）
     func handleDidConnect(_ peripheral: CBPeripheral) {
+        guard canOperate, phase == .connecting, acceptsCallback(peripheral) else { return }
         self.peripheral = peripheral
         peripheral.delegate = self
         setPhase(.discovering)
@@ -464,21 +461,35 @@ extension BleSession {
         peripheral.discoverServices(nil)
     }
 
-    func handleDidFailToConnect(_ error: Error?) {
+    private func acceptsCallback(_ peripheral: CBPeripheral) -> Bool {
+        self.peripheral === peripheral && callbackGuard.accepts(peripheral.identifier, generation: callbackGuard.generation)
+    }
+
+    func handleDidFailToConnect(_ peripheral: CBPeripheral, error: Error?) {
+        if callbackGuard.finishRetiring(peripheral.identifier) { return }
+        guard acceptsCallback(peripheral), phase == .connecting else { return }
         let msg = error?.localizedDescription ?? "未知原因"
-        setPhase(.failed("连接失败：\(msg)"))
+        setPhase(.failed("蓝牙连接失败，请重试"))
         AppLog.shared.w("BLE 连接失败：\(msg)")
         connectContinuation?.resume(returning: false)
         connectContinuation = nil
+        callbackGuard.retire(peripheral.identifier, waitForTerminal: false)
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        resetBuffers()
     }
 
-    func handleDidDisconnect(_ error: Error?) {
+    func handleDidDisconnect(_ peripheral: CBPeripheral, error: Error?) {
+        if callbackGuard.finishRetiring(peripheral.identifier) { return }
+        guard acceptsCallback(peripheral) else { return }
         AppLog.shared.w("BLE 已断开" + (error.map { "：\($0.localizedDescription)" } ?? ""))
-        if phase == .ready {
-            setPhase(.failed("连接已断开"))
-        }
-        replyWaiters.values.forEach { $0.resume(returning: nil) }
-        replyWaiters.removeAll()
+        setPhase(.failed("连接已断开"))
+        callbackGuard.retire(peripheral.identifier, waitForTerminal: false)
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        connectContinuation?.resume(returning: false)
+        connectContinuation = nil
+        resetBuffers()
     }
 }
 
@@ -492,16 +503,19 @@ extension BleSession: CBPeripheralDelegate {
         didDiscoverServices error: Error?
     ) {
         Task { @MainActor in
+            guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .discovering else { return }
             if let error {
-                self.setPhase(.failed("发现服务失败：\(error.localizedDescription)"))
+                AppLog.shared.w("发现服务失败：\(error.localizedDescription)")
+                self.setPhase(.failed("蓝牙服务查询失败"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil
                 return
             }
-            let services = peripheral.services ?? []
+            // Android 从 FF00 中取 FF01/FF02，不使用其他服务的同名特征。
+            let services = (peripheral.services ?? []).filter { $0.uuid == Self.serviceUUID }
             self.gattLines.append("发现 \(services.count) 个服务")
             guard !services.isEmpty else {
-                self.setPhase(.failed("连上了但没有任何 GATT 服务"))
+                self.setPhase(.failed("设备不支持当前蓝牙控制方式"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil
                 return
@@ -520,6 +534,14 @@ extension BleSession: CBPeripheralDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .discovering,
+                  peripheral.services?.contains(where: { $0 === service }) == true else { return }
+            if error != nil {
+                self.setPhase(.failed("发现特征失败"))
+                self.connectContinuation?.resume(returning: false)
+                self.connectContinuation = nil
+                return
+            }
             for c in service.characteristics ?? [] {
                 self.gattLines.append("  CHAR \(c.uuid.uuidString)")
                 if c.uuid == Self.notifyUUID {
@@ -545,8 +567,16 @@ extension BleSession: CBPeripheralDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .discovering,
+                  self.notifyChar === characteristic else { return }
             if let error {
                 AppLog.shared.w("开启通知失败：\(error.localizedDescription)")
+                self.setPhase(.failed("开启通知失败"))
+                self.connectContinuation?.resume(returning: false)
+                self.connectContinuation = nil
+                return
+            }
+            guard characteristic.isNotifying else {
                 self.setPhase(.failed("开启通知失败"))
                 self.connectContinuation?.resume(returning: false)
                 self.connectContinuation = nil
@@ -561,13 +591,20 @@ extension BleSession: CBPeripheralDelegate {
     /// 两个条件都满足才算就绪
     private func checkReady() {
         guard phase == .discovering || phase == .connecting else { return }
+        guard servicesPending <= 0 else { return }
         guard writeChar != nil else {
-            setPhase(.failed("没有找到 FF02 写入特征，这台可能不是水控表"))
+            setPhase(.failed("设备不支持当前蓝牙控制方式"))
             connectContinuation?.resume(returning: false)
             connectContinuation = nil
             return
         }
-        guard notifyEnabled || notifyChar == nil else { return }
+        guard notifyChar != nil else {
+            setPhase(.failed("设备不支持当前蓝牙控制方式"))
+            connectContinuation?.resume(returning: false)
+            connectContinuation = nil
+            return
+        }
+        guard notifyEnabled else { return }
 
         setPhase(.ready)
         connectContinuation?.resume(returning: true)
@@ -580,6 +617,8 @@ extension BleSession: CBPeripheralDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .ready,
+                  self.writeChar === characteristic else { return }
             self.writeContinuation?.resume(returning: error == nil)
             self.writeContinuation = nil
         }
@@ -593,6 +632,8 @@ extension BleSession: CBPeripheralDelegate {
         guard error == nil, let data = characteristic.value else { return }
         let bytes = [UInt8](data)
         Task { @MainActor in
+            guard self.canOperate, self.acceptsCallback(peripheral), self.phase == .ready,
+                  self.notifyChar === characteristic else { return }
             self.appendAndDispatch(bytes)
         }
     }

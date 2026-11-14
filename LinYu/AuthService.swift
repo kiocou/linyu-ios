@@ -20,7 +20,7 @@ enum AuthService {
         ], withAuth: false, tag: "login")
 
         let resp = try ApiClient.decode(LoginData.self, from: data, path: "login")
-        guard let d = resp.data else { throw ApiError.business(code: -1, message: "登录响应缺少 data") }
+        guard let d = resp.data else { throw ApiError.business(code: -1, message: "服务响应异常，请重试") }
         return d
     }
 
@@ -37,7 +37,7 @@ enum AuthService {
         ], withAuth: false, tag: "smsLogin")
 
         let resp = try ApiClient.decode(LoginData.self, from: data, path: "smsLogin")
-        guard let d = resp.data else { throw ApiError.business(code: -1, message: "登录响应缺少 data") }
+        guard let d = resp.data else { throw ApiError.business(code: -1, message: "服务响应异常，请重试") }
         return d
     }
 

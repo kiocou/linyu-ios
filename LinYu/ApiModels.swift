@@ -8,7 +8,7 @@ struct APIResponse<T: Decodable>: Decodable {
     let errorMessage: String?
     let msg: String?
 
-    var displayMessage: String? { errorMessage ?? msg }
+    var displayMessage: String? { (errorMessage ?? msg).map { LoginFeedback.chineseMessage($0) } }
 }
 
 // MARK: - 登录
@@ -168,7 +168,6 @@ struct WalletData: Decodable {
     let accountGivenMoney: AnyNumber?
     let money: AnyNumber?
 
-    var realYuan: Double? { accountRealMoney?.value }
     var moneyYuan: Double? { money?.value }
 }
 
@@ -189,7 +188,7 @@ struct BillItem: Decodable {
     let consumeBillDTO: BillDTO?
 }
 
-struct BillDTO: Decodable, Identifiable {
+struct BillDTO: Codable, Identifiable {
     /// 账单**序号**（7 位），和 orderNo 不是一回事
     let orderId: String?
     let consumeDate: String?
@@ -242,10 +241,33 @@ struct BillDTO: Decodable, Identifiable {
     }
 }
 
+/// `/order/weixinScorePay/unPay/queryBill` 的一项 —— 俗称「残留账单」。
+///
+/// ⚠️ 这是**扁平结构**（不像账单列表套一层 `consumeBillDTO`），
+/// 而且按 `consumeDate` 定位（不是 orderNo）—— 代扣接口也是拿它扣的。
+struct UnpaidBill: Decodable, Identifiable {
+    let orderId: String?
+    let orderNo: String?
+    let consumeDate: String?
+    /// ⚠️ **字符串**、单位是元（和账单列表一致，和 consumeOrder/result 那个厘不同）
+    let consumeMoney: String?
+    let description: String?
+
+    var id: String { orderId ?? consumeDate ?? orderNo ?? UUID().uuidString }
+    var yuan: Double? { consumeMoney.flatMap(Double.init) }
+
+    /// 设备名：`项目名:设备名` 里冒号之后那段，再套一遍格式化
+    var displayNamePart: String {
+        let raw = description ?? ""
+        guard let r = raw.range(of: ":") else { return raw }
+        return DeviceInfo.formatDeviceName(String(raw[r.upperBound...]))
+    }
+}
+
 /// `/account/info`
-struct AccountInfo: Decodable {
-    let name: String?
-    let idCardNumber: String?
+struct AccountInfo: Codable {
+    var name: String?
+    var idCardNumber: String?
     let telephone: String?
     let genderName: String?
     let cardStatus: Int?
@@ -336,10 +358,15 @@ struct ConsumeResultData: Decodable {
 ///
 /// ⚠️ 字段一律可空：**没领过码时服务端真的返回 `"useCode": null`**。
 /// 写成非可选会让整个响应解码失败，界面就永远停在「加载中」。
+struct GeneratedUseCode: Decodable {
+    let useCode: String?
+    let remainTimes: Int?
+}
+
 struct UseCodeData: Decodable {
     let useCode: String?
     /// 1 = 开启，0 = 关闭
-    let useCodeStatus: Int?
+    var useCodeStatus: Int?
     /// 手机号后三位（和 useCode 末三位相同）
     let useCodeRandom: String?
     let useCodeStartTime: String?
