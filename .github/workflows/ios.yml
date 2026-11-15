@@ -67,6 +67,10 @@ jobs:
             LinYu/BleFrame.swift LinYu/KlcxkjCrypto.swift Tests/CryptoRegression.swift \
             -o "$RUNNER_TEMP/linyu-crypto-tests"
           "$RUNNER_TEMP/linyu-crypto-tests"
+          swiftc -swift-version 5 -parse-as-library \
+            LinYu/DeviceControlPolicy.swift Tests/AutoDisconRegression.swift \
+            -o "$RUNNER_TEMP/linyu-autodiscon-tests"
+          "$RUNNER_TEMP/linyu-autodiscon-tests"
 
       - name: 生成 Xcode 工程
         run: xcodegen generate

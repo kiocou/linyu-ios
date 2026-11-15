@@ -90,7 +90,7 @@ enum CloudShower {
 
         // ③ 轮询确认（9 次 × 700ms）
         var opened = false
-        var autoDisCon = rateResp.data?.autoDisConTime ?? 0
+        var autoDisCon = AutoDisconPolicy.countdownSeconds(from: rateResp.data?.autoDisConTime)
         var confirmedOrderNo = rateResp.data?.orderNo ?? ""
         var consumeDate = rateResp.data?.consumeDate ?? ""
 
@@ -108,7 +108,7 @@ enum CloudShower {
             if r.success, let d = r.data, d.looksOpened {
                 opened = true
                 if let no = d.orderNo, !no.isEmpty { confirmedOrderNo = no }
-                if let t = d.autoDisConTime, t > 0 { autoDisCon = t }
+                if let t = d.autoDisConTime, t > 0 { autoDisCon = AutoDisconPolicy.countdownSeconds(from: t) }
                 break
             }
         }

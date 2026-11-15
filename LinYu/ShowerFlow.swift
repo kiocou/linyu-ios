@@ -223,6 +223,8 @@ final class ShowerFlow: ObservableObject {
                                       orderNo: order.orderNo, startedAt: Prefs.startedAt(order.snCode))
         // 立刻给这一单起监控（Android 在 enterShowerState 里启动 ShowerWatchService）
         startOrderWatch()
+        // 蓝牙表还要盯着**设备侧**状态：设备有空闲自动断开，App 得自己发现水停了
+        startBleStateWatch(order)
     }
 
     /// 清掉这台设备的本地使用状态
@@ -239,6 +241,9 @@ final class ShowerFlow: ObservableObject {
         // 先撤销身份，旧任务返回时不能再次处理或移除新的监控任务。
         watchTokens[snCode] = nil
         watchTasks[snCode] = nil
+        // ⚠️ 只是摘掉登记，不 cancel：状态复核任务自己也可能是收尾的发起者，
+        // 取消会把后面的采集/上传一起掐掉（Task.isCancelled 会让 BLE 操作直接失效）。
+        bleStateTasks[snCode] = nil
         deviceOwner[snCode] = true
         AppNotifications.shared.clearInUse(snCode: snCode)
         ActiveOrderStore.finish(snCode)
@@ -452,7 +457,20 @@ final class ShowerFlow: ObservableObject {
 
         // 2. 读状态
         openingText = "正在读取设备状态…"
-        guard let st = await ble.query() else {
+        // ⚠️ 设备偶尔会漏答一次 0x23（2026-11-15 22:02:44 真机：连接正常、8 秒无应答，
+        // 用户只看到「设备无响应」，于是变成「有时候开不了水」）。
+        // 读状态是只读操作，先重试两轮再判失败。
+        var firstState = await ble.query()
+        if firstState == nil {
+            for attempt in 1 ... 2 {
+                guard workScope.isCurrent else { return }
+                openingText = "正在读取设备状态…（重试 \(attempt)/2）"
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                firstState = await ble.query(timeout: 4)
+                if firstState != nil { break }
+            }
+        }
+        guard let st = firstState else {
             ble.disconnect()
             errorMessage = "设备无响应（状态帧读取失败），请靠近设备后重试"
             return
@@ -615,6 +633,7 @@ final class ShowerFlow: ObservableObject {
             return
         }
         AppLog.shared.i("云端下发费率包 \(downBytes.count)B")
+        AppLog.shared.i("服务端 autoDisConTime=\(rateResp.data?.autoDisConTime.map(String.init) ?? "无")，App 侧倒计时=\(AutoDisconPolicy.countdownSeconds(from: rateResp.data?.autoDisConTime))s")
 
         // 4. 写入设备（真正开阀）
         openingText = "正在写入费率并开阀…"
@@ -665,7 +684,9 @@ final class ShowerFlow: ObservableObject {
             startedAt: startDate(sn),
             preDeductMoney: displayPreDeduct(device, response: rateResp.data?.preDeductYuan),
             channel: .ble,
-            autoDisConSec: rateResp.data?.autoDisConTime ?? 0
+            // ⚠️ 不能直接当会话时长：服务端对蓝牙表回的是设备空闲断开参数（真机 5 秒），
+            // 3.1.3 因此开阀 5 秒后自己关水。口径见 AutoDisconPolicy。
+            autoDisConSec: AutoDisconPolicy.countdownSeconds(from: rateResp.data?.autoDisConTime)
         )
         startTimer()
         AppLog.shared.i("✅ 蓝牙开阀成功 orderNo=\(rateResp.data?.orderNo ?? "")")
@@ -1417,6 +1438,58 @@ final class ShowerFlow: ObservableObject {
             return false
         }
         return true
+    }
+
+    // MARK: - 蓝牙设备侧状态复核
+
+    /// 一条 BLE 会话的**设备侧**状态复核（连接还在，就每 15 秒读一次 `0x23`）。
+    ///
+    /// 为什么需要：设备带「无流量自动断开」，用户也可能在别的客户端关阀。
+    /// 没有它，App 只有自己那张「使用中」卡片 —— 水早停了、金额也收不回来，
+    /// 真机上表现为「使用页一直挂着」。
+    private var bleStateTasks: [String: Task<Void, Never>] = [:]
+
+    private func startBleStateWatch(_ order: ActiveOrder) {
+        guard order.channel == .ble else { return }
+        let sn = order.snCode
+        guard !sn.isEmpty, bleStateTasks[sn] == nil else { return }
+        let expectMac = order.device.connectMac
+        bleStateTasks[sn] = Task { [weak self] in
+            var idleHits = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard self.workScope.isCurrent else { return }
+                // 这一单已经收尾（用户关阀 / 结算中）就退出
+                guard self.activeOrder?.snCode == sn || ActiveOrderStore.isRunning(sn) else { return }
+                // 控制链在用同一个 BleSession 时不能插队查询
+                guard !self.controlGate.isBusy, self.ble.phase == .ready else { continue }
+                guard let st = await self.ble.query(timeout: 3),
+                      st.mac.isEmpty || st.mac.uppercased() == expectMac.uppercased() else { continue }
+                if !st.isIdle {
+                    idleHits = 0
+                    AppLog.shared.i("蓝牙状态复核：\(sn) 仍在出水（state=\(st.state)）")
+                    continue
+                }
+                idleHits += 1
+                AppLog.shared.i("蓝牙状态复核：\(sn) 读到空闲（\(idleHits)/2）")
+                guard idleHits >= 2 else { continue }
+                AppLog.shared.w("蓝牙状态复核：\(sn) 连续两轮空闲，设备已自行关阀，收尾结算")
+                await self.finishBleExternally(sn)
+                return
+            }
+        }
+    }
+
+    /// 设备自己关阀后的收尾：退出使用页 → 采集 / 上传 / 写回，金额照常记账。
+    private func finishBleExternally(_ snCode: String) async {
+        guard workScope.isCurrent, let order = activeOrder, order.snCode == snCode else { return }
+        guard let token = controlGate.begin() else { return }
+        defer { controlGate.finish(token) }
+        let elapsed = order.elapsedSeconds
+        AppLog.shared.i("蓝牙设备自行关阀，收尾：\(snCode) 已用 \(elapsed)s")
+        activeOrder = nil
+        await settleBle(order, elapsed: elapsed)
     }
 
     // MARK: - 订单监控（对照 Android ShowerWatchService.watch）
