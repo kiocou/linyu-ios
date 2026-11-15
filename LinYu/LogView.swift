@@ -12,6 +12,8 @@ struct LogView: View {
     }
     @State private var export: Export?
     @State private var exportFailed = false
+    /// 免单模式（实验）：见 BypassMode.swift
+    @State private var bypassMode = BypassSettings.mode
 
     private enum Filter: String, CaseIterable {
         case all = "全部", warn = "警告", error = "错误"
@@ -66,6 +68,23 @@ struct LogView: View {
             }
             .padding(10).background(colors.surfaceVariant).clipShape(RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal, 14).padding(.vertical, 8)
+            HStack(spacing: 8) {
+                Text("免单模式").font(.system(size: 12)).foregroundStyle(colors.textSecondary)
+                ForEach(BypassMode.allCases) { item in
+                    Button {
+                        bypassMode = item
+                        BypassSettings.mode = item
+                        AppLog.shared.i("免单模式已切换：\(item.rawValue)")
+                    } label: {
+                        Text(item.shortTitle).font(.system(size: 12))
+                            .foregroundStyle(bypassMode == item ? colors.onAccent : colors.textSecondary)
+                            .padding(.horizontal, 10).frame(height: 28)
+                            .background(bypassMode == item ? colors.accent : colors.surfaceVariant)
+                            .clipShape(Capsule())
+                    }
+                }
+                Spacer(minLength: 0)
+            }.padding(.horizontal, 14).padding(.bottom, 8)
             if visible.isEmpty {
                 Text(log.lines.isEmpty ? "暂无日志" : "暂无匹配日志")
                     .font(.system(size: 14)).foregroundStyle(colors.textSecondary)

