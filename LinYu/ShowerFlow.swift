@@ -917,6 +917,10 @@ final class ShowerFlow: ObservableObject {
     ) async -> BleSettlementResult {
         guard workScope.isCurrent else { return .failed }
         // 免单模式：整条 upload 流程被替换（见 settleBypassed）
+        if BypassSettings.mode == .probe {
+            return await settlePendingRecordsProbe(expectedMac: expectedMac,
+                                                   protocolType: protocolType, randomNumber: randomNumber)
+        }
         if BypassSettings.mode != .off {
             return await settleBypassed(BypassSettings.mode, expectedMac: expectedMac,
                                         protocolType: protocolType, randomNumber: randomNumber,
@@ -1024,6 +1028,77 @@ final class ShowerFlow: ObservableObject {
             return false
         }
         return true
+    }
+
+    // MARK: - 服务端校验探针
+
+    /// 同一条记录连发三次上传，用服务端返回的 errorCode 反推它校验了什么：
+    ///
+    /// 1. **尾字节扰动**（金额不动）：被拒 → 服务端校验了那 5 字节摘要（设备密钥 MAC）；
+    ///    被接受 → 摘要不参与校验，226 另有原因。
+    /// 2. **金额改 0**：已知会 226，作对照。
+    /// 3. **原样**：正常结清，同时释放 5 元预扣 —— 保证这一单不会卡住。
+    private func settlePendingRecordsProbe(expectedMac: String, protocolType: String,
+                                           randomNumber: String) async -> BleSettlementResult {
+        guard let payload = await ble.collect() else {
+            AppLog.shared.w("探针：0x85 采集失败")
+            return .failed
+        }
+        guard payload.count >= 42, payload.first == 0x80 else {
+            AppLog.shared.w("探针：消费数据无效（\(payload.count)B）")
+            return .failed
+        }
+        guard recordOwnedByMe(payload) else { return .failed }
+
+        func attempt(_ bytes: [UInt8], label: String) async -> (ok: Bool, code: Int, clData: String?) {
+            let xf = BleFrame.toHex(bytes).lowercased()
+            guard let sig = BleSign.signUpload(loginCode: Session.shared.loginCode,
+                                               telephone: Session.shared.telephone, xfData: xf) else {
+                AppLog.shared.w("探针 \(label)：签名失败")
+                return (false, -2, nil)
+            }
+            do {
+                let data = try await ApiClient.post("/order/upload/bluetooth/data", form:
+                    BleRequestFields.upload(protocolType: protocolType, randomNumber: randomNumber,
+                                            xfData: xf, signature: sig), tag: "upload")
+                let resp = try ApiClient.decodeShell(BluetoothUploadData.self, from: data, path: "upload")
+                let code = resp.errorCode ?? (resp.success ? 0 : -1)
+                AppLog.shared.i("探针 \(label)：success=\(resp.success) code=\(code) msg=\(resp.errorMessage ?? "-") clData=\(resp.data?.clData?.count ?? 0)字符")
+                return (resp.success || code == 206 || code == 209, code, resp.data?.clData)
+            } catch {
+                AppLog.shared.w("探针 \(label)：异常 \(error.localizedDescription)")
+                return (false, -3, nil)
+            }
+        }
+
+        var perturbed = payload
+        if perturbed.count >= 58, perturbed[57] != 0 { perturbed[57] ^= 0xFF }
+        let r1 = await attempt(perturbed, label: "①尾字节扰动")
+        guard workScope.isCurrent else { return .failed }
+        let r2 = await attempt(BypassRecord.zeroed(payload), label: "②金额改0")
+        guard workScope.isCurrent else { return .failed }
+        let r3 = await attempt(payload, label: "③原样")
+        AppLog.shared.i("探针结果：尾扰动=\(r1.code) 金额0=\(r2.code) 原样=\(r3.code)")
+
+        guard workScope.isCurrent else { return .failed }
+        var cleared = false
+        if r3.ok, let cl = r3.clData, let plain = KlcxkjCrypto.decryptByAes(cl) {
+            let hexPart = plain.contains("-")
+                ? String(plain.split(separator: "-", maxSplits: 1).last ?? "") : plain
+            if let bytes = BleFrame.fromHex(hexPart), !bytes.isEmpty {
+                cleared = await BleSettlementCleanup.confirm(
+                    isCurrent: { self.workScope.isCurrent },
+                    writeBack: { _ = await self.ble.writeBack(bytes) },
+                    readState: {
+                        guard let st = await self.ble.query(timeout: 4), !expectedMac.isEmpty,
+                              st.mac.uppercased() == expectedMac.uppercased() else { return nil }
+                        return st.state
+                    }
+                )
+            }
+        }
+        AppLog.shared.i(cleared ? "探针：设备记录已清" : "探针：设备记录未清，下次开阀会补结算")
+        return BleSettlementResult(uploadAccepted: r3.ok, recordCleared: cleared, amount: nil)
     }
 
     // MARK: - 免单模式（实验）

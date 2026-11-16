@@ -20,6 +20,10 @@ enum BypassMode: String, CaseIterable, Identifiable {
     case off
     case zeroUpload
     case silentClear
+    /// 诊断用：同一条记录连发三次上传（尾字节扰动 / 金额改 0 / 原样），
+    /// 用服务端返回的 errorCode 反推它到底校验了什么。最后「原样」那次会正常结清，
+    /// 所以这一模式不会把表卡住，花费就是本次真实用量。
+    case probe
 
     var id: String { rawValue }
 
@@ -28,6 +32,7 @@ enum BypassMode: String, CaseIterable, Identifiable {
         case .off: return "关闭（正常计费）"
         case .zeroUpload: return "改金额上传（实测服务端 226 拒收）"
         case .silentClear: return "只清设备记录（实测设备拒收）"
+        case .probe: return "探针：三次上传测服务端校验"
         }
     }
 
@@ -37,6 +42,7 @@ enum BypassMode: String, CaseIterable, Identifiable {
         case .off: return "关"
         case .zeroUpload: return "改金额"
         case .silentClear: return "只清零"
+        case .probe: return "探针"
         }
     }
 }
@@ -50,7 +56,7 @@ enum BypassSettings {
     /// 每次尝试都会把 **5 元预扣**冻结到下次结算，所以默认必须关闭。
     static var mode: BypassMode {
         get {
-            guard let raw = UserDefaults.standard.string(forKey: key) else { return .off }
+            guard let raw = UserDefaults.standard.string(forKey: key) else { return .probe }
             return BypassMode(rawValue: raw) ?? .off
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
