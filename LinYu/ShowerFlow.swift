@@ -165,6 +165,7 @@ final class ShowerFlow: ObservableObject {
 
     init() {
         ble.operationAllowed = { [weak self] in self?.workScope.isCurrent == true }
+        BypassSettings.logCurrent()
         restoredOrders = ActiveOrderStore.all()
         if !restoredOrders.isEmpty {
             AppLog.shared.i("启动时发现 \(restoredOrders.count) 条活跃订单：\(restoredOrders.map(\.snCode).joined(separator: ","))")
@@ -934,6 +935,8 @@ final class ShowerFlow: ObservableObject {
             AppLog.shared.w("结算：消费数据无效（\(payload.count)B，首字节 \(firstHex)），放弃上传")
             return .failed
         }
+        // 归属校验：不替别人的记录买单（见 recordOwnedByMe）
+        guard recordOwnedByMe(payload) else { return .failed }
 
         // ② 上传（xfData 必须**小写**：服务端对大小写敏感，签名用小写、上传字段也得小写）
         guard workScope.isCurrent else { return .failed }
@@ -997,13 +1000,30 @@ final class ShowerFlow: ObservableObject {
                 }
             )
             AppLog.shared.i(recordCleared ? "结算后设备已空闲，记录已清" : "账单已结清，设备清理未确认")
-            AppLog.shared.i("结算上传成功：设备=\(deviceName) orderNo=\(orderNo) upMoney=\(body.upMoney?.value ?? body.consumeMoney?.value ?? -1)")
+            AppLog.shared.i("结算上传成功：设备=\(deviceName) orderNo=\(orderNo) 金额=\(MoneyFormat.format(body.upMoneyYuan ?? -1))元（原始=\(body.upMoney?.value ?? body.consumeMoney?.value ?? -1)）")
             _ = consumeDate
             return BleSettlementResult(uploadAccepted: true, recordCleared: recordCleared, amount: yuan)
         } catch {
             AppLog.shared.w("上传结算失败：\(error.localizedDescription)")
             return .failed
         }
+    }
+
+    /// 记录归属校验：62B 记录的 `[15:19]` 就是 accountId。
+    ///
+    /// 不是自己的记录就**既不代付、也不清除**。2026-11-16 22:48 真机现场：
+    /// 313 上留着一条 accountId=10470、金额 630 厘（0.63 元）的记录，
+    /// App 补结算时用自己的 loginCode 签名上传，钱记到了 10151 头上。
+    /// 服务端只认签名，不认记录里的归属 —— 客户端必须自己拦。
+    private func recordOwnedByMe(_ payload: [UInt8]) -> Bool {
+        guard payload.count >= 19 else { return true }
+        let raw = payload[15 ..< 19].reduce(0) { ($0 << 8) | Int($1) }
+        guard raw > 0, let own = Int(Session.shared.accountId), own > 0 else { return true }
+        guard raw == own else {
+            AppLog.shared.e("结算：记录归属账号 \(raw)，当前账号 \(own)，拒绝代付与清除")
+            return false
+        }
+        return true
     }
 
     // MARK: - 免单模式（实验）
@@ -1033,6 +1053,7 @@ final class ShowerFlow: ObservableObject {
             AppLog.shared.w("免单：消费数据无效（\(payload.count)B）")
             return .failed
         }
+        guard recordOwnedByMe(payload) else { return .failed }
         let amountHex = payload.count >= 32
             ? payload[BypassRecord.amountRange].map { String(format: "%02X", $0) }.joined() : "-"
         AppLog.shared.i("免单模式=\(mode.rawValue)：记录 \(payload.count)B，原始金额字段=\(amountHex)")

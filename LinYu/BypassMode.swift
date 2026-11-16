@@ -44,9 +44,20 @@ enum BypassMode: String, CaseIterable, Identifiable {
 enum BypassSettings {
     private static let key = "linyu.billingBypassMode"
 
+    /// ⚠️ 没有存过值时**默认 `.zeroUpload`**：实验版就是拿来验证免单的，
+    /// 用户装上不该还要去日志页找开关（3.2.0 就是这么被当成"没生效"的）。
+    /// 想恢复正常计费，日志页点「关」即可。
     static var mode: BypassMode {
-        get { BypassMode(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .off }
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: key) else { return .zeroUpload }
+            return BypassMode(rawValue: raw) ?? .zeroUpload
+        }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+
+    /// 启动时打一行，方便日志里确认当前模式
+    static func logCurrent() {
+        AppLog.shared.i("计费模式：\(mode.rawValue)（\(mode.title)）")
     }
 }
 
