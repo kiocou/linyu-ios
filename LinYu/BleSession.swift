@@ -269,7 +269,12 @@ final class BleSession: NSObject, ObservableObject {
             return false
         }
         let ok = payload.first == Self.ackOK
-        AppLog.shared.i("0x86 写回\(ok ? "成功" : "失败")")
+        if ok {
+            AppLog.shared.i("0x86 写回成功")
+        } else {
+            // 设备拒绝时回的是 2 字节错误码，以前只打"失败"，看不出原因
+            AppLog.shared.w("0x86 写回失败：\(BleFrame.toHexSpaced(payload))")
+        }
         return ok
     }
 

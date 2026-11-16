@@ -36,8 +36,8 @@ targets:
       path: LinYu/Info.plist
       properties:
         CFBundleDisplayName: 淋浴
-        CFBundleShortVersionString: "3.2.1"
-        CFBundleVersion: "24"
+        CFBundleShortVersionString: "3.2.2"
+        CFBundleVersion: "25"
         LinYuSourceRevision: "$(LINYU_SOURCE_REVISION)"
         CFBundleURLTypes:
           - CFBundleURLName: com.hualala.linyu.widget
@@ -77,8 +77,8 @@ targets:
       path: WidgetExtension/Info.plist
       properties:
         CFBundleDisplayName: 淋浴小组件
-        CFBundleShortVersionString: "3.2.1"
-        CFBundleVersion: "24"
+        CFBundleShortVersionString: "3.2.2"
+        CFBundleVersion: "25"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:

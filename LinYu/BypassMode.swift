@@ -26,8 +26,8 @@ enum BypassMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .off: return "关闭（正常计费）"
-        case .zeroUpload: return "改金额上传（被拒自动清零）"
-        case .silentClear: return "只清设备记录（不上传）"
+        case .zeroUpload: return "改金额上传（实测服务端 226 拒收）"
+        case .silentClear: return "只清设备记录（实测设备拒收）"
         }
     }
 
@@ -44,13 +44,14 @@ enum BypassMode: String, CaseIterable, Identifiable {
 enum BypassSettings {
     private static let key = "linyu.billingBypassMode"
 
-    /// ⚠️ 没有存过值时**默认 `.zeroUpload`**：实验版就是拿来验证免单的，
-    /// 用户装上不该还要去日志页找开关（3.2.0 就是这么被当成"没生效"的）。
-    /// 想恢复正常计费，日志页点「关」即可。
+    /// ⚠️ 2026-11-16 真机实测：两条路都被挡住 ——
+    /// 改金额上传被服务端 **226** 拒收（记录尾字节是带密钥的摘要），
+    /// 只清零的 0x86 被设备回 2 字节错误（金额必须与设备自己那条记录一致）。
+    /// 每次尝试都会把 **5 元预扣**冻结到下次结算，所以默认必须关闭。
     static var mode: BypassMode {
         get {
-            guard let raw = UserDefaults.standard.string(forKey: key) else { return .zeroUpload }
-            return BypassMode(rawValue: raw) ?? .zeroUpload
+            guard let raw = UserDefaults.standard.string(forKey: key) else { return .off }
+            return BypassMode(rawValue: raw) ?? .off
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
